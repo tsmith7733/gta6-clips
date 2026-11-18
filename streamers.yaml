@@ -1,0 +1,14 @@
+# Streamers to watch. You edit this file; the pipeline only reads it.
+#
+# The pipeline will ONLY record, clip or publish entries with permission: true.
+# Set it to true only once the creator's clipping program/rules allow it or
+# they've told you directly, and note where that permission came from.
+
+streamers:
+  - name: The Burnt Peanut
+    platform: youtube
+    channel_url: https://www.youtube.com/@TheBurntPeanut
+    permission: false          # flip to true once confirmed
+    permission_source: ""      # e.g. "clipping program rules, Discord #clips, 2026-11-18"
+    credit: "🎥 Clip from The Burnt Peanut: https://www.youtube.com/@TheBurntPeanut"
+    priority: 1                # 1 = highest

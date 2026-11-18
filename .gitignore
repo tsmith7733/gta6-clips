@@ -1,0 +1,16 @@
+# Secrets: never commit
+.env
+secrets/
+
+# Runtime data
+data/
+logs/
+recordings/
+spoilers/
+tools/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
