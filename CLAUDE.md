@@ -57,6 +57,8 @@ watcher → recorders (+ chat) → spike detector → window cutter → Clips Ki
 
 ## Clips Kitty API notes
 
+- The owner has the **Microsoft Store** build. Its data folder is `%LOCALAPPDATA%\Packages\ClipsStudio.ClipsStudio_<id>\LocalCache\Local\Clips Studio\data`, not the winget path `%LOCALAPPDATA%\Clips Studio\data`. Find it with a glob on `ClipsStudio.ClipsStudio_*`. Plugin routes need the `X-Clips-Kitty-Session` header, read from `<data>\plugins\session.secret`.
+- Clips Kitty 2.1.0 doesn't bundle the official GTA plugin in its catalog (it was listed after the release), and the online list never adds the project's own listings. Until a newer release bundles it, install it by Git address through `POST /plugins/plan` + `/plugins/install`.
 - `http://127.0.0.1:8765`, with **no authentication**. Address it only as `127.0.0.1`/`localhost` (other `Host` headers get a 400), and never expose it.
 - `POST /jobs` and `/videos/local` return `{"job_id": null, "already_processed": true}` for repeats. Check for a null `job_id` instead of assuming a job was created. A 409 means the queue is full.
 - Use only the endpoints that `docs/API.md` (in the clips-studio repo) marks as supported. Record the Clips Kitty version we tested against in `config.yaml → clipskitty.tested_version`, and log a warning if `GET /health` reports another version.
