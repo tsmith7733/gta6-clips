@@ -8,7 +8,7 @@ streamers:
   - name: The Burnt Peanut
     platform: youtube
     channel_url: https://www.youtube.com/@TheBurntPeanut
-    permission: false          # flip to true once confirmed
-    permission_source: ""      # e.g. "clipping program rules, Discord #clips, 2026-11-18"
+    permission: true
+    permission_source: "Confirmed by the channel owner (Tyler) on 2026-11-18"
     credit: "🎥 Clip from The Burnt Peanut: https://www.youtube.com/@TheBurntPeanut"
     priority: 1                # 1 = highest

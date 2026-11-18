@@ -1,0 +1,9 @@
+[project]
+name = "gta6clips"
+version = "0.1.0"
+description = "Orchestrator that turns permitted GTA 6 streams into YouTube Shorts through Clips Kitty"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

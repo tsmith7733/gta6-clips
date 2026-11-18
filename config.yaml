@@ -1,0 +1,49 @@
+# Orchestrator settings. Secrets do NOT go here: they live in .env.
+# Paths are relative to this file's folder unless absolute.
+
+paths:
+  streamers: streamers.yaml
+  database: data/orchestrator.db
+  logs: logs
+
+clipskitty:
+  # Clips Kitty's local API. Must stay on 127.0.0.1 / localhost: it has no
+  # authentication, and Clips Kitty refuses any other Host header.
+  url: http://127.0.0.1:8765
+  # The Clips Kitty version this orchestrator was tested against. A different
+  # version is allowed but logged as a warning.
+  tested_version: "2.1.0"
+  # The GTA plugin that finds the moments in every job (installed in Clips Kitty).
+  gta_plugin_id: colingpt9/gta-vi-highlights
+  gta_plugin_version: "0.4.1"
+  # Options sent with every job.
+  job:
+    gaming: true           # Gaming / Reaction layout: webcam + game
+    captions: true
+    max_clips: 8           # per video in Phase 1 (a whole VOD); live windows will use 1-2
+    focus: >-
+      GTA 6 moments people share: chaotic physics and ragdolls, police chases
+      that escalate, funny NPC interactions, bugs and glitches, rage, insane
+      stunts or crashes, first reactions to the map and graphics, and strong
+      one-liners. Put the payoff early.
+  # How often to ask Clips Kitty whether a job is finished, and for how long.
+  poll_seconds: 30
+  job_timeout_hours: 6
+
+clips:
+  # Our target length. Clips outside it are kept but flagged for review.
+  min_seconds: 15
+  max_seconds: 45
+
+metadata:
+  # Every clip carries these, plus a hashtag of the streamer's name.
+  hashtags: ["#GTA6", "#GTAVI", "#Shorts"]
+
+gta6:
+  # Words that mark a video or stream as GTA 6 (YouTube doesn't expose the game).
+  keywords: ["gta 6", "gta vi", "gta6", "gtavi", "grand theft auto vi", "grand theft auto 6"]
+
+llm:
+  # Writes the 3 title options and the hook. Needs ANTHROPIC_API_KEY in .env.
+  model: claude-opus-5-5
+  effort: medium

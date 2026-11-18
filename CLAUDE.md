@@ -8,7 +8,7 @@ A local pipeline that watches permitted streamers playing GTA 6 (Grand Theft Aut
 
 **This repo is the orchestrator around Clips Kitty, not a clip editor.** Clips Kitty does the transcription, choosing the exact clip boundaries, the gaming layout (webcam + game), captions, titles/descriptions/hashtags, rendering and the YouTube upload. This repo does what Clips Kitty can't: the permission gate, live GTA 6 category watching, rolling recording, per-channel chat and audio spike detection, the spoiler queue, mandatory credit lines, and the approve-before-publish rule.
 
-**Status:** planning. No code yet. The plan below is waiting for the owner's OK. Update this section at the end of each phase.
+**Status:** Phase 1 built and tested against a fake Clips Kitty (`python -m gta6clips vod <url>`). Waiting on the owner's first real run on their PC with the test VOD `https://www.youtube.com/watch?v=CW_rULxbDs0` (The Burnt Peanut). Next: Phase 2. Update this section at the end of each phase.
 
 Phases (each one runnable and tested, then committed, before the next starts):
 1. One permitted GTA 6 VOD → Clips Kitty → our post-processing (credit, hashtags, 3 titles) → clips listed as `pending_review`
@@ -79,7 +79,28 @@ watcher → recorders (+ chat) → spike detector → window cutter → Clips Ki
 
 ## Commands
 
-To be filled in as Phase 1 lands.
+Run from the repo root. On the owner's Windows PC, use `.venv\Scripts\python.exe` in place of `.venv/bin/python`.
+
+```bash
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m pytest                                    # all tests (no network, no Clips Kitty needed)
+.venv/bin/python -m pytest tests/test_vod.py -k permission    # a single test
+.venv/bin/python -m gta6clips check                           # streamers, API key, Clips Kitty readiness
+.venv/bin/python -m gta6clips vod <url> [--no-wait] [--force] # Phase 1: one VOD end to end
+.venv/bin/python -m gta6clips wait <job_id>                   # collect a --no-wait job
+.venv/bin/python -m gta6clips clips [--status all]            # list clips for review
+```
+
+The cloud dev container can't reach YouTube (the proxy blocks it) or Clips Kitty, so real runs only happen on the owner's PC. Exit codes: 0 ok, 1 runtime problem, 2 setup problem (config or missing key), 3 permission refused.
+
+## Code map
+
+- `gta6clips/streamers.py`: streamers.yaml loading and **the permission gate** (`require_permission`, `permitted_streamer_for`). `permission` must be a real YAML boolean.
+- `gta6clips/clipskitty/client.py`: the only Clips Kitty HTTP code. `readiness.py` refuses to start when automation or auto-upload is on, a blocking preflight check fails, or the GTA plugin is missing, off, or not at the pinned version.
+- `gta6clips/vod.py`: Phase 1 flow (probe → gate → readiness → `POST /jobs` with `gaming`, the pinned `pipeline`, `focus` and required `hashtags` → poll → post-process). `resume_job` collects `--no-wait` jobs, but only ones in our `windows` table.
+- `gta6clips/postprocess.py`: credit block (idempotent, re-checked with `has_credit`), hashtag merge, Claude titles, `PATCH /clips/{id}`, and the `clips` row as `pending_review`. Clips already tracked are skipped (no repeat Claude calls). Approved, rejected and published clips are never touched.
+- `gta6clips/llm/titles.py`: Claude (`claude-opus-5-5`, effort from config) with JSON-schema structured output and `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`). All prompts live in `gta6clips/llm/`.
+- `tests/fake_clipskitty.py`: the 2.1.0 API stand-in. Extend it whenever the client uses a new endpoint, copying shapes from the 2.1.0 `docs/API.md`, not from `main`.
 
 ## Reference repos reviewed (Nov 2026)
 
