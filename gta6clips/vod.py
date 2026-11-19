@@ -61,12 +61,22 @@ def wait_for_job(client: ClipsKittyClient, job_id: int, *, poll_seconds: float, 
                  clock: Callable[[], float] = time.monotonic) -> dict:
     deadline = clock() + timeout_seconds
     last_status = None
+    warned_paused = False
     while True:
         job = client.job(job_id)
         status = job.get("status")
         if status != last_status:
             log.info("Clips Kitty job %s: %s", job_id, status)
             last_status = status
+        if status == "queued" and not warned_paused:
+            try:
+                paused = bool(client.queue().get("paused"))
+            except ClipsKittyError:
+                paused = False
+            if paused:
+                log.warning("Clips Kitty's queue is stopped, so job %s is waiting. Press 'Start queue' "
+                            "on Clips Kitty's Queue page; this window carries on by itself after that.", job_id)
+                warned_paused = True
         if status == "done":
             return job
         if status in ("failed", "cancelled"):

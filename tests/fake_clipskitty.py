@@ -24,6 +24,7 @@ class FakeState:
         {"id": PLUGIN_ID, "version": "0.4.1", "enabled": True, "problems_here": []}
     ])
     queue_full: bool = False
+    paused: bool = False
     processed: set[str] = field(default_factory=set)        # video ids already done
     jobs: dict[int, dict] = field(default_factory=dict)
     # Each job is "running" for this many GETs before it finishes.
@@ -125,11 +126,18 @@ def create_app(state: FakeState) -> FastAPI:
                 "lines": [{"start": 0.0, "end": 1.0, "text": f"he crashed the car {i}"}],
             }
 
+    @app.get("/queue")
+    def queue():
+        return {"processing": [], "queued": [], "completed": [], "failed": [], "paused": state.paused,
+                "capacity": 5, "max_active": 5}
+
     @app.get("/jobs/{job_id}")
     def get_job(job_id: int):
         job = state.jobs.get(job_id)
         if job is None:
             raise HTTPException(404, "no such job")
+        if job["status"] == "queued" and state.paused:
+            return {k: v for k, v in job.items() if k != "polls"}
         if job["status"] in ("queued", "running"):
             job["polls"] += 1
             if job["polls"] > state.polls_until_done:

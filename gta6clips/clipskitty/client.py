@@ -126,6 +126,10 @@ class ClipsKittyClient:
         return self._submit_result(self._request("POST", "/videos/local", json=body).json())
 
     # -- progress -------------------------------------------------------------------
+    def queue(self) -> dict:
+        """GET /queue: includes `paused`, which survives restarts and looks like a hang."""
+        return self._get("/queue")
+
     def job(self, job_id: int) -> dict:
         return self._get(f"/jobs/{int(job_id)}")
 

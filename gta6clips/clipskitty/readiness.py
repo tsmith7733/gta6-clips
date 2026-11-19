@@ -59,6 +59,11 @@ def check_readiness(client: ClipsKittyClient, cfg: Config) -> Readiness:
             fix = f" Fix: {check['fix']}" if check.get("fix") else ""
             result.problems.append(f"Clips Kitty check '{check.get('name')}' failed: {check.get('detail')}.{fix}")
 
+    if client.queue().get("paused"):
+        result.warnings.append(
+            "Clips Kitty's queue is stopped. Jobs will wait until you press 'Start queue' on its Queue page."
+        )
+
     plugin_id = cfg.require("clipskitty.gta_plugin_id")
     wanted_version = str(cfg.require("clipskitty.gta_plugin_version"))
     plugin = next((p for p in client.plugins() if p.get("id") == plugin_id), None)
