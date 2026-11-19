@@ -44,6 +44,9 @@ gta6:
   keywords: ["gta 6", "gta vi", "gta6", "gtavi", "grand theft auto vi", "grand theft auto 6"]
 
 llm:
-  # Writes the 3 title options and the hook. Needs ANTHROPIC_API_KEY in .env.
+  # false: clips keep Clips Kitty's own title (free, no API key needed).
+  # true: Claude writes 3 title options and an on-screen hook per clip
+  #       (about 2-4 cents a clip; needs ANTHROPIC_API_KEY in .env).
+  enabled: false
   model: claude-opus-5-5
   effort: medium

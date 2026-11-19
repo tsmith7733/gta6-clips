@@ -11,7 +11,7 @@ from . import db
 from .clipskitty import ClipsKittyClient, ClipsKittyError
 from .clipskitty.readiness import check_readiness
 from .config import ConfigError, env, load_config
-from .llm import ClaudeTitleWriter, TitleWriterError
+from .llm import ClaudeTitleWriter, ClipsKittyTitles, TitleWriter, TitleWriterError
 from .logging_setup import setup_logging
 from .sources import SourceError
 from .streamers import PermissionDenied, StreamerFileError, load_streamers
@@ -42,6 +42,20 @@ def _parser() -> argparse.ArgumentParser:
     clips.add_argument("--status", default="pending_review",
                        help="pending_review, spoiler_hold, approved, rejected, published, or all")
     return p
+
+
+def claude_titles_on(cfg) -> bool:
+    return cfg.get("llm.enabled", False) is True
+
+
+def make_title_writer(cfg) -> TitleWriter | None:
+    """Clips Kitty's own titles unless llm.enabled is true. None means: on, but no API key."""
+    if not claude_titles_on(cfg):
+        return ClipsKittyTitles()
+    if not env("ANTHROPIC_API_KEY"):
+        return None
+    return ClaudeTitleWriter(model=cfg.get("llm.model", "claude-opus-5-5"),
+                             effort=cfg.get("llm.effort", "medium"))
 
 
 def _print_result(result: VodResult) -> None:
@@ -77,12 +91,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "clips":
             return _list_clips(conn, args.status)
 
-        if not env("ANTHROPIC_API_KEY"):
-            print("ANTHROPIC_API_KEY isn't set. Copy .env.example to .env and add your Claude API key.",
+        writer = make_title_writer(cfg)
+        if writer is None:
+            print("Claude titles are on (llm.enabled: true in config.yaml) but ANTHROPIC_API_KEY isn't set.\n"
+                  "Add your key to .env, or set llm.enabled: false to keep Clips Kitty's titles.",
                   file=sys.stderr)
             return 2
-        writer = ClaudeTitleWriter(model=cfg.get("llm.model", "claude-opus-5-5"),
-                                   effort=cfg.get("llm.effort", "medium"))
         if args.command == "vod":
             result = run_vod(args.url, cfg=cfg, client=client, conn=conn, streamers=streamers,
                              writer=writer, wait=not args.no_wait, force=args.force)
@@ -104,7 +118,10 @@ def _check(cfg, client: ClipsKittyClient, streamers) -> int:
     for s in streamers:
         print(f"  {'OK  ' if s.permission else 'NO  '} {s.name} ({s.platform}) priority {s.priority}"
               f"{'' if s.permission else '  <- not permitted, will be skipped'}")
-    print(f"Claude API key: {'set' if env('ANTHROPIC_API_KEY') else 'MISSING (add it to .env)'}")
+    if claude_titles_on(cfg):
+        print(f"Claude titles: on, API key {'set' if env('ANTHROPIC_API_KEY') else 'MISSING (add it to .env)'}")
+    else:
+        print("Claude titles: off (clips keep Clips Kitty's titles; set llm.enabled: true to turn on)")
     try:
         readiness = check_readiness(client, cfg)
     except ClipsKittyError as exc:

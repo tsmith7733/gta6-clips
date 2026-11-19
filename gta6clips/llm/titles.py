@@ -102,6 +102,14 @@ def brief_prompt(brief: ClipBrief) -> str:
     )
 
 
+class ClipsKittyTitles:
+    """Free TitleWriter: keeps the title Clips Kitty wrote. No API calls, no hook."""
+
+    def write(self, brief: ClipBrief) -> TitleSuggestions:
+        title = _clean(brief.clipskitty_title, MAX_TITLE_CHARS) or f"{brief.streamer} GTA 6 moment"
+        return TitleSuggestions(titles=[title], hook="")
+
+
 class ClaudeTitleWriter:
     """TitleWriter backed by the Claude API. Reads ANTHROPIC_API_KEY from the environment."""
 

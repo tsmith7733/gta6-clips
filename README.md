@@ -25,7 +25,7 @@ You need four things on your PC:
 - **Clips Kitty 2.1.0 or newer.** The Microsoft Store version is fine.
 - **The GTA plugin installed in Clips Kitty** (see the next section).
 - **Python 3.11 or newer.** Check with `py --version` in PowerShell. If it's missing, install it from python.org or with `winget install Python.Python.3.12`.
-- **A Claude API key** from https://console.anthropic.com.
+- *(Optional)* **A Claude API key** from https://console.anthropic.com, only if you turn on Claude-written titles (see step 3). It's pay-as-you-go, about 2-4 cents a clip.
 
 ### 1. Get the code
 
@@ -50,14 +50,16 @@ py -3 -m venv .venv
 
 The commands below call `.venv\Scripts\python.exe` directly, so you don't need to "activate" anything or change PowerShell's script policy.
 
-### 3. Add your Claude API key
+### 3. (Optional) Claude-written titles
+
+By default, clips keep the title Clips Kitty writes, which is free. To have Claude write 3 title options and an on-screen hook for each clip instead:
 
 ```powershell
 copy .env.example .env
 notepad .env
 ```
 
-Put your key after `ANTHROPIC_API_KEY=` and save. `.env` is never committed to git.
+Put your key after `ANTHROPIC_API_KEY=` and save (`.env` is never committed to git). Then set `enabled: true` under `llm:` in `config.yaml`.
 
 ### 4. Check Clips Kitty's settings
 
@@ -115,7 +117,7 @@ It does five things:
 2. checks Clips Kitty is ready
 3. sends the video to Clips Kitty in Gaming mode with the GTA plugin
 4. waits for Clips Kitty to finish (a 2-hour stream can take 30-60 minutes)
-5. writes 3 title options and a hook per clip with Claude, adds the credit line and hashtags, and saves each clip as **pending review**
+5. adds the credit line and hashtags to each clip (plus 3 Claude title options and a hook, if you turned that on), and saves each clip as **pending review**
 
 If you'd rather not keep the window open, add `--no-wait`, then collect the clips later with the job number it prints:
 

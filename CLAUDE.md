@@ -69,6 +69,7 @@ watcher → recorders (+ chat) → spike detector → window cutter → Clips Ki
 - `config.yaml`: poll interval, concurrency, retention, scoring weights and thresholds, keywords, window lead-in and tail, Clips Kitty URL and job options, publish defaults and quota thresholds.
 - `streamers.yaml`: owner-edited. Each entry has `name, platform, channel_url, permission, credit, priority`. The layout override is set per creator inside Clips Kitty's Gaming layout editor.
 - `.env`: `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`, `ANTHROPIC_API_KEY` (for our spoiler and title calls). Clips Kitty keeps its own keys.
+- **The owner chose not to pay for the Claude API for now (2026-11-19).** `config.yaml → llm.enabled` defaults to `false`, and clips keep Clips Kitty's own title through `ClipsKittyTitles` (no hook, one title option). Any new LLM feature, such as the Phase 2 spoiler check, must also work with no API key: use a free fallback, or flag it for review rather than failing. Ask before adding anything that would need the key.
 
 ## Conventions
 
@@ -99,7 +100,7 @@ The cloud dev container can't reach YouTube (the proxy blocks it) or Clips Kitty
 - `gta6clips/clipskitty/client.py`: the only Clips Kitty HTTP code. `readiness.py` refuses to start when automation or auto-upload is on, a blocking preflight check fails, or the GTA plugin is missing, off, or not at the pinned version.
 - `gta6clips/vod.py`: Phase 1 flow (probe → gate → readiness → `POST /jobs` with `gaming`, the pinned `pipeline`, `focus` and required `hashtags` → poll → post-process). `resume_job` collects `--no-wait` jobs, but only ones in our `windows` table.
 - `gta6clips/postprocess.py`: credit block (idempotent, re-checked with `has_credit`), hashtag merge, Claude titles, `PATCH /clips/{id}`, and the `clips` row as `pending_review`. Clips already tracked are skipped (no repeat Claude calls). Approved, rejected and published clips are never touched.
-- `gta6clips/llm/titles.py`: Claude (`claude-opus-5-5`, effort from config) with JSON-schema structured output and `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`). All prompts live in `gta6clips/llm/`.
+- `gta6clips/llm/titles.py`: `ClipsKittyTitles` (default, free) or `ClaudeTitleWriter`, picked by `cli.make_title_writer` from `llm.enabled`. Claude (`claude-opus-5-5`, effort from config) with JSON-schema structured output and `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`). All prompts live in `gta6clips/llm/`.
 - `tests/fake_clipskitty.py`: the 2.1.0 API stand-in. Extend it whenever the client uses a new endpoint, copying shapes from the 2.1.0 `docs/API.md`, not from `main`.
 
 ## Reference repos reviewed (Nov 2026)
