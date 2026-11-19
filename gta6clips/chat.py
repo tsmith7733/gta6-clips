@@ -72,3 +72,66 @@ def parse_youtube_live_chat(lines: Iterable[str]) -> list[ChatMessage]:
 def read_youtube_live_chat(path: Path) -> list[ChatMessage]:
     with path.open(encoding="utf-8", errors="replace") as f:
         return parse_youtube_live_chat(f)
+
+
+# -- Live chat: yt-dlp keeps appending to the file while the stream is live ------------
+
+def parse_youtube_chat_utc(lines: Iterable[str]) -> list[ChatMessage]:
+    """(UTC seconds the message was sent, text) from yt-dlp live chat lines.
+
+    Live, yt-dlp's offsets count from the first message it saw, so the message's own
+    timestampUsec is used instead; it puts chat on the same wall clock as the recording.
+    """
+    out: list[ChatMessage] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        replay = entry.get("replayChatItemAction") or {}
+        actions = replay.get("actions") or ([entry] if "addChatItemAction" in entry else [])
+        for action in actions:
+            item = (action.get("addChatItemAction") or {}).get("item") or {}
+            for renderer in _MESSAGE_RENDERERS:
+                if renderer not in item:
+                    continue
+                body = item[renderer]
+                try:
+                    utc = int(body.get("timestampUsec")) / 1e6
+                except (TypeError, ValueError):
+                    continue
+                text = _runs_text(body.get("message") or {})
+                if text:
+                    out.append((utc, text))
+    out.sort(key=lambda m: m[0])
+    return out
+
+
+class ChatFileTail:
+    """Reads the lines added to a growing chat file since the last read (whole lines only)."""
+
+    def __init__(self, *candidates: Path):
+        self.candidates = candidates   # e.g. the .part file yt-dlp writes, then the finished file
+        self._path: Path | None = None
+        self._pos = 0
+        self._partial = ""
+
+    def read_new(self) -> list[ChatMessage]:
+        path = self._path if self._path and self._path.is_file() else \
+            next((p for p in self.candidates if p.is_file()), None)
+        if path is None:
+            return []
+        if path != self._path:
+            # yt-dlp renamed .part to the finished name: same content, carry on from the same place.
+            self._path = path
+        with path.open("rb") as f:
+            f.seek(self._pos)
+            data = f.read()
+            self._pos = f.tell()
+        text = self._partial + data.decode("utf-8", errors="replace")
+        lines = text.split("\n")
+        self._partial = lines.pop()  # an unfinished last line waits for the next read
+        return parse_youtube_chat_utc(lines)

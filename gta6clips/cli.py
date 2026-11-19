@@ -52,6 +52,12 @@ def _parser() -> argparse.ArgumentParser:
     scan.add_argument("--allow-non-gta", action="store_true",
                       help="scan it even though the title doesn't mention GTA 6")
 
+    watch = sub.add_parser("watch", help="watch permitted streamers and clip their GTA 6 streams while they're "
+                                         "live (Phase 3)")
+    watch.add_argument("--minutes", type=float, help="stop after this many minutes (default: run until Ctrl+C)")
+    watch.add_argument("--allow-non-gta", action="store_true",
+                       help="record a permitted streamer even when the stream title doesn't mention GTA 6")
+
     wait = sub.add_parser("wait", help="wait for a queued Clips Kitty job, then title and credit its clips")
     wait.add_argument("job_id", type=int)
 
@@ -126,6 +132,8 @@ def main(argv: list[str] | None = None) -> int:
                                max_windows=args.max_windows)
             _print_scan(scanned)
             return 0
+        if args.command == "watch":
+            return _watch(cfg, client, conn, streamers, writer, args)
         if args.command == "vod":
             result = run_vod(args.url, cfg=cfg, client=client, conn=conn, streamers=streamers,
                              writer=writer, wait=not args.no_wait, force=args.force,
@@ -218,4 +226,16 @@ def _list_clips(conn, status: str) -> int:
             print(f"    hook: {r['hook']}")
         for n in notes:
             print(f"    ! {n}")
+    return 0
+
+
+def _watch(cfg, client, conn, streamers, writer, args) -> int:
+    from .live.factory import find_ytdlp, session_factory
+    from .live.watcher import Watcher
+
+    make = session_factory(cfg, conn, ffmpeg=find_ffmpeg(cfg), ytdlp=find_ytdlp())
+    watcher = Watcher(cfg=cfg, client=client, conn=conn, streamers=streamers, writer=writer, make_session=make,
+                      allow_non_gta=args.allow_non_gta)
+    watcher.run(stop_after_s=args.minutes * 60 if args.minutes else None)
+    print("\nStopped watching. Nothing is published. Review the clips with: python -m gta6clips clips")
     return 0

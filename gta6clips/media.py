@@ -88,7 +88,7 @@ def measure_loudness(ffmpeg: Path, media: Path, bin_s: float) -> list[float]:
     """Per-bin loudness of a media file's audio, from ffmpeg's ebur128 filter."""
     cmd = [str(ffmpeg), "-hide_banner", "-nostats", "-nostdin", "-i", str(media), "-vn", "-ac", "1",
            "-af", "ebur128=framelog=info", "-f", "null", "-"]
-    log.info("Measuring loudness of %s", media.name)
+    log.debug("Measuring loudness of %s", media.name)
     samples: list[tuple[float, float]] = []
     tail: list[str] = []
     proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,

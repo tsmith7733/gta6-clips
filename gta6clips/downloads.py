@@ -93,6 +93,7 @@ class YtDlpFetcher:
             if not found:
                 raise DownloadError("yt-dlp finished but the audio file isn't there")
             audio = found[0]
+        log.info("Measuring loudness of %s", audio.name)
         try:
             return measure_loudness(self.ffmpeg, audio, bin_s)
         finally:

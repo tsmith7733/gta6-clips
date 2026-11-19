@@ -81,6 +81,17 @@ CREATE TABLE IF NOT EXISTS signals (
     value      REAL NOT NULL,
     PRIMARY KEY (stream_id, kind, offset_s)
 );
+
+-- Phase 3: the recorded 1-minute pieces of a live stream.
+CREATE TABLE IF NOT EXISTS segments (
+    id         INTEGER PRIMARY KEY,
+    stream_id  INTEGER NOT NULL REFERENCES streams(id) ON DELETE CASCADE,
+    path       TEXT NOT NULL,
+    start_utc  REAL NOT NULL,
+    end_utc    REAL NOT NULL,
+    deleted    INTEGER NOT NULL DEFAULT 0     -- 1 once the janitor removed the file
+);
+CREATE INDEX IF NOT EXISTS segments_stream_time ON segments(stream_id, start_utc);
 """
 
 # Columns added to tables that already exist in an older orchestrator.db.
@@ -92,6 +103,7 @@ MIGRATIONS = {
         "score": "REAL",
         "reasons": "TEXT NOT NULL DEFAULT ''",
         "local_path": "TEXT NOT NULL DEFAULT ''",
+        "finder": "TEXT NOT NULL DEFAULT 'gta_plugin'",   # gta_plugin | clipskitty (the fallback)
     },
 }
 
@@ -102,8 +114,12 @@ def _now() -> str:
 
 def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    # The watcher writes all the time while `scan`, `clips` and the review page read: WAL lets
+    # readers and the writer work at once, and the timeout waits out a brief lock instead of failing.
+    conn = sqlite3.connect(path, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
     _migrate(conn)
@@ -137,7 +153,7 @@ def add_window(conn: sqlite3.Connection, *, streamer: str, source_url: str, sour
 
 
 def update_window(conn: sqlite3.Connection, window_id: int, **fields) -> None:
-    allowed = {"ck_job_id", "ck_video_id", "state", "error", "start_utc", "end_utc", "local_path"}
+    allowed = {"ck_job_id", "ck_video_id", "state", "error", "start_utc", "end_utc", "local_path", "finder"}
     bad = set(fields) - allowed
     if bad:
         raise ValueError(f"unknown window fields: {bad}")
@@ -259,3 +275,56 @@ def signal_for_stream(conn: sqlite3.Connection, stream_id: int, kind: str) -> li
 def windows_for_stream(conn: sqlite3.Connection, stream_id: int) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM windows WHERE stream_id = ? ORDER BY offset_start_s",
                         (stream_id,)).fetchall()
+
+
+# -- Phase 3: live sessions ------------------------------------------------------------
+
+def add_chat(conn: sqlite3.Connection, stream_id: int, start_utc: float,
+             messages: list[tuple[float, str]]) -> None:
+    """Appends live chat; `messages` are (offset_s from start_utc, text)."""
+    conn.executemany(
+        "INSERT INTO chat_messages (stream_id, offset_s, t_utc, text) VALUES (?, ?, ?, ?)",
+        [(stream_id, off, start_utc + off, text) for off, text in messages],
+    )
+    conn.commit()
+
+
+def set_signal_values(conn: sqlite3.Connection, stream_id: int, kind: str,
+                      values: list[tuple[float, float]]) -> None:
+    """Adds or replaces (offset_s, value) bins of one signal."""
+    conn.executemany("INSERT OR REPLACE INTO signals (stream_id, kind, offset_s, value) VALUES (?, ?, ?, ?)",
+                     [(stream_id, kind, off, v) for off, v in values])
+    conn.commit()
+
+
+def add_segment(conn: sqlite3.Connection, stream_id: int, path: str, start_utc: float, end_utc: float) -> int:
+    cur = conn.execute("INSERT INTO segments (stream_id, path, start_utc, end_utc) VALUES (?, ?, ?, ?)",
+                       (stream_id, path, start_utc, end_utc))
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def segments_between(conn: sqlite3.Connection, stream_id: int, start_utc: float,
+                     end_utc: float) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM segments WHERE stream_id = ? AND deleted = 0 AND end_utc > ? AND start_utc < ?"
+        " ORDER BY start_utc", (stream_id, start_utc, end_utc)).fetchall()
+
+
+def old_segments(conn: sqlite3.Connection, before_utc: float) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM segments WHERE deleted = 0 AND end_utc < ? ORDER BY start_utc",
+                        (before_utc,)).fetchall()
+
+
+def mark_segment_deleted(conn: sqlite3.Connection, segment_id: int) -> None:
+    conn.execute("UPDATE segments SET deleted = 1 WHERE id = ?", (segment_id,))
+    conn.commit()
+
+
+def live_windows(conn: sqlite3.Connection, states: tuple[str, ...]) -> list[sqlite3.Row]:
+    """Windows cut from live recordings (their stream's video_id is '<id>@<epoch>')."""
+    marks = ",".join("?" * len(states))
+    return conn.execute(
+        f"SELECT w.*, s.title AS stream_title FROM windows w JOIN streams s ON s.id = w.stream_id"
+        f" WHERE s.video_id LIKE '%@%' AND w.state IN ({marks}) ORDER BY w.score DESC, w.id",
+        states).fetchall()

@@ -32,6 +32,7 @@ class FakeState:
     polls_until_done: int = 1
     fail_jobs: bool = False
     clips_per_video: int = 2
+    plugin_finds_nothing: bool = False   # the GTA plugin's answer on a window that's only funny
     clips: dict[int, dict] = field(default_factory=dict)
     submissions: list[dict] = field(default_factory=list)
     patches: list[tuple[int, dict]] = field(default_factory=list)
@@ -95,7 +96,8 @@ def create_app(state: FakeState) -> FastAPI:
                         "queued_job_id": job["id"]}
         state._next_job += 1
         state.jobs[state._next_job] = {"id": state._next_job, "type": "process", "status": "queued",
-                                       "error": "", "video_id": video_id, "polls": 0}
+                                       "error": "", "video_id": video_id, "polls": 0,
+                                       "pipeline": bool(pipeline)}
         return {"job_id": state._next_job}
 
     @app.post("/jobs")
@@ -118,7 +120,8 @@ def create_app(state: FakeState) -> FastAPI:
             return
         job["status"] = "done"
         state.processed.add(job["video_id"])
-        for i in range(state.clips_per_video):
+        found = 0 if state.plugin_finds_nothing and job.get("pipeline") else state.clips_per_video
+        for i in range(found):
             state._next_clip += 1
             start = 100.0 + 60 * i
             state.clips[state._next_clip] = {

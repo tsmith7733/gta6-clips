@@ -9,7 +9,7 @@ without your approval.
 |---|---|---|
 | 1 | One recorded stream → Clips Kitty → credited, titled clips waiting for review | ✅ built |
 | 2 | Chat and audio spike scoring, spoiler filter | ✅ done, tested on a 19 h GTA 6 stream |
-| 3 | Watch live streams and record several at once | |
+| 3 | Watch live streams and record several at once | ✅ built (YouTube), waiting for a first real live run |
 | 4 | Review page | |
 | 5 | Publish approved clips (private or scheduled) | |
 
@@ -162,6 +162,29 @@ Too many or too few moments? Change `threshold` under `scoring:` in `config.yaml
 ```
 
 The words are under `spoilers:` in `config.yaml`. This applies to `vod` too.
+
+## Clip streams while they're live (Phase 3)
+
+`watch` keeps an eye on every permitted YouTube streamer. When one goes live with GTA 6 in the stream title, it records the stream in 1-minute pieces, reads the live chat, and scores it the same way `scan` does. A few minutes after a big moment it cuts that part out of the recording and sends it to Clips Kitty. The clips land in your review list like the others. Nothing is published.
+
+```powershell
+.venv\Scripts\python.exe -m gta6clips watch
+```
+
+Leave it running, with Clips Kitty open and the PC awake (set Windows sleep to Never while it runs). Ctrl+C stops it cleanly. Anything still in Clips Kitty is collected the next time you start `watch`. To try it for a short while, add `--minutes 30`.
+
+**It's pickier than `scan`.** A VOD scan sees the whole stream before choosing; live it has to decide as it goes, so a moment is sent only when:
+
+- its score is over `threshold` under `live: selection:` in `config.yaml` (7 by default),
+- at least two signals agree (chat speed, hype words, loudness), so a raid saying hi or a loud game sound on its own isn't enough,
+- it's the strongest moment in its 8 minutes, and
+- no more than 3 windows went out that hour, unless it beats all of them.
+
+After 90 minutes with nothing sent, the bar drops to 6, so a quieter stream still gets its best moments. Replayed minute by minute on the 19-hour GTA 6 stream, these settings sent 17 windows, and those included all 12 of its strongest moments.
+
+**Disk space:** recordings take about 4 GB an hour at 1080p. Pieces older than 2 hours are deleted (`retention_hours`). The windows sent to Clips Kitty are kept in `data\windows`.
+
+**Other games:** a stream whose title doesn't mention GTA 6 isn't recorded. `--allow-non-gta` records it anyway (handy for a test). If he switches games mid-stream, the recording stops after two checks in a row (about 5 minutes).
 
 ## Streamers
 

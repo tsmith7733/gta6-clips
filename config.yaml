@@ -11,6 +11,8 @@ paths:
   cache: data/cache
   # The cut windows sent to Clips Kitty.
   windows: data/windows
+  # Live recordings (1-minute pieces, deleted after live.retention_hours) and their chat.
+  recordings: data/live
 
 clipskitty:
   # Clips Kitty's local API. Must stay on 127.0.0.1 / localhost: it has no
@@ -22,16 +24,25 @@ clipskitty:
   # The GTA plugin that finds the moments in every job (installed in Clips Kitty).
   gta_plugin_id: colingpt9/gta-vi-highlights
   gta_plugin_version: "0.4.1"
+  # The GTA plugin only spots physical events (chases, crashes) in the transcript, so it finds
+  # nothing in a window that is funny because of what the streamer says. When it finds nothing,
+  # send the window once more to Clips Kitty's own moment finder (its AI setting: local Ollama
+  # here, so free), which follows the focus text below. false: keep the plugin's answer.
+  fallback_to_clipskitty_finder: true
   # Options sent with every job.
   job:
     gaming: true           # Gaming / Reaction layout: webcam + game
     captions: true
     max_clips: 8           # per video in Phase 1 (a whole VOD); live windows will use 1-2
     focus: >-
-      GTA 6 moments people share: chaotic physics and ragdolls, police chases
-      that escalate, funny NPC interactions, bugs and glitches, rage, insane
-      stunts or crashes, first reactions to the map and graphics, and strong
-      one-liners. Put the payoff early.
+      Funny and viral GTA 6 moments: the streamer's out-of-pocket one-liners
+      and roasts, trolling NPCs, cops or friends, absurd commentary, rage and
+      crash-outs, dumb plans going wrong, chaotic physics and ragdolls, police
+      chases that escalate, funny NPC interactions, glitches, insane stunts or
+      crashes. Prefer a joke with its punchline and the laugh over plain action.
+      Start on the action or the setup line within the first 2 seconds, keep it
+      15-35 seconds, and end right after the payoff and the streamer's reaction;
+      skip slow setup.
   # How often to ask Clips Kitty whether a job is finished, and for how long.
   poll_seconds: 30
   job_timeout_hours: 6
@@ -62,7 +73,8 @@ scoring:
   # Hype words in chat. Whole words, any case. "re:" starts a regular expression.
   # Regular expressions go in single quotes so YAML leaves the backslashes alone.
   chat_keywords: ["clip it", "clip that", "clipped", "kekw", "lul", "lmao", "lmfao", "omegalul",
-                  "no way", "wtf", "bruh", "holy", "insane", "💀", "😂", "🤣", ":face-with-tears-of-joy:",
+                  "no way", "wtf", "bruh", "holy", "insane", "💀", "😂", "🤣", "😭", ":face-with-tears-of-joy:",
+                  "out of pocket", "cancelled", "diabolical", "crashout", "crash out", "kek",
                   're:\?{3,}', 're:\b(?:ha){3,}\b', 're:\bl+o+l+\b']
 
 windows:
@@ -74,6 +86,31 @@ windows:
   # yt-dlp format for the cut windows: up to 1080p, video + audio merged to mp4.
   # H.264 (avc1) first: Clips Kitty converts AV1 to H.264 before working, which is slow.
   video_format: "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b"
+
+# Phase 3: watch permitted streamers and clip their GTA 6 streams while they're live
+# (python -m gta6clips watch). YouTube only for now. Uses windows: and scoring: above too.
+live:
+  poll_seconds: 150            # how often each channel's /live page is checked (yt-dlp, no API quota)
+  tick_seconds: 15             # how often recordings are read and scored
+  max_concurrent_streams: 3    # streams recorded at once, highest priority first
+  stop_after_misses: 2         # checks in a row offline / not GTA 6 before a recording stops
+  retention_hours: 2           # recorded 1-minute pieces older than this are deleted (~4 GB/h at 1080p)
+  segment_seconds: 60
+  # What ffmpeg records: up to 1080p H.264 + audio (YouTube live serves them separately).
+  video_format: "bv*[height<=1080][vcodec^=avc1]+ba/b[height<=1080][vcodec^=avc1]/bv*[height<=1080]+ba/b"
+  # Live chat on his streams runs hot all the time, so a laugh burst scores lower than on a
+  # replayed VOD: on the first real live stream (2026-11-19) the hour's three big laugh moments
+  # scored 4.1-4.4. Replayed minute by minute, these bars sent about 30 windows on the 19 h GTA 6
+  # VOD (11 of its top 12) and 4 on the 7.7 h Rob Run VOD.
+  selection:
+    threshold: 4.0             # combined score (scoring.threshold is the VOD bar)
+    quiet_threshold: 3.5       # the bar once quiet_minutes pass with nothing sent, so a
+    quiet_minutes: 45          # quieter stream still gets its best moments
+    min_signals: 2             # chat speed, hype words and loudness: at least this many must agree...
+    min_signal_z: 2.0          # ...each at least this far over normal
+    min_gap_seconds: 480       # a weaker spike within this of a stronger one is dropped
+    max_windows_per_hour: 3    # then only a moment stronger than that hour's best gets through
+    min_baseline_seconds: 300  # learn the stream's normal for 5 minutes before sending anything
 
 # Clips that may show major story missions or the ending are held (status spoiler_hold)
 # and kept out of the main review queue. Free keyword check, no API key needed.
