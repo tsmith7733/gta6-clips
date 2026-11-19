@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python -m pytest)",
+      "Bash(.venv/bin/python -m pytest *)",
+      "Bash(.venv/bin/python -m gta6clips check)",
+      "Bash(.venv/bin/python -m gta6clips clips)",
+      "Bash(.venv/bin/python -m gta6clips clips *)",
+      "Bash(.venv/bin/python -m gta6clips --help)",
+      "Bash(.venv\\Scripts\\python.exe -m pytest)",
+      "Bash(.venv\\Scripts\\python.exe -m pytest *)",
+      "Bash(.venv\\Scripts\\python.exe -m gta6clips check)",
+      "Bash(.venv\\Scripts\\python.exe -m gta6clips clips)",
+      "Bash(.venv\\Scripts\\python.exe -m gta6clips clips *)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./secrets/**)",
+      "Edit(./.env)",
+      "Edit(./secrets/**)"
+    ]
+  }
+}
