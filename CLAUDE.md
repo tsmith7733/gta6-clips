@@ -87,7 +87,7 @@ Run from the repo root. On the owner's Windows PC, use `.venv\Scripts\python.exe
 .venv/bin/python -m pytest                                    # all tests (no network, no Clips Kitty needed)
 .venv/bin/python -m pytest tests/test_vod.py -k permission    # a single test
 .venv/bin/python -m gta6clips check                           # streamers, API key, Clips Kitty readiness
-.venv/bin/python -m gta6clips vod <url> [--no-wait] [--force] # Phase 1: one VOD end to end
+.venv/bin/python -m gta6clips vod <url> [--no-wait] [--force] [--allow-non-gta]  # Phase 1; refuses titles without a GTA 6 keyword
 .venv/bin/python -m gta6clips wait <job_id>                   # collect a --no-wait job
 .venv/bin/python -m gta6clips clips [--status all]            # list clips for review
 ```
