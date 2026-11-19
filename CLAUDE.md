@@ -8,7 +8,7 @@ A local pipeline that watches permitted streamers playing GTA 6 (Grand Theft Aut
 
 **This repo is the orchestrator around Clips Kitty, not a clip editor.** Clips Kitty does the transcription, choosing the exact clip boundaries, the gaming layout (webcam + game), captions, titles/descriptions/hashtags, rendering and the YouTube upload. This repo does what Clips Kitty can't: the permission gate, live GTA 6 category watching, rolling recording, per-channel chat and audio spike detection, the spoiler queue, mandatory credit lines, and the approve-before-publish rule.
 
-**Status:** Phase 1 built and tested against a fake Clips Kitty (`python -m gta6clips vod <url>`). Waiting on the owner's first real run on their PC with the test VOD `https://www.youtube.com/watch?v=CW_rULxbDs0` (The Burnt Peanut). Next: Phase 2. Update this section at the end of each phase.
+**Status:** Phase 1 done and verified on the owner's PC (2026-11-19): `vod` sent a permitted VOD to Clips Kitty 2.1.0 with the GTA plugin and saved 8 credited clips as `pending_review`. That test VOD turned out to be Age of Empires 2, so `vod` now refuses titles without a GTA 6 keyword (`--allow-non-gta` overrides). Clips Kitty appends the job's `hashtags` to clip titles; `postprocess.clean_title` strips them. Next: Phase 2, which needs a real GTA 6 VOD from a permitted streamer. Update this section at the end of each phase.
 
 Phases (each one runnable and tested, then committed, before the next starts):
 1. One permitted GTA 6 VOD → Clips Kitty → our post-processing (credit, hashtags, 3 titles) → clips listed as `pending_review`

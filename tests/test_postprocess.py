@@ -3,7 +3,7 @@ import json
 import pytest
 
 from gta6clips.llm import TitleWriterError
-from gta6clips.postprocess import has_credit, merge_hashtags, postprocess_video, with_credit
+from gta6clips.postprocess import clean_title, has_credit, merge_hashtags, postprocess_video, with_credit
 from gta6clips.streamers import PermissionDenied
 
 from .conftest import FakeWriter
@@ -92,3 +92,22 @@ def test_postprocess_refuses_unpermitted_streamer(ck, conn, cfg, streamers, writ
     pete = next(s for s in streamers if not s.permission)
     with pytest.raises(PermissionDenied):
         postprocess_video(ck, conn, cfg, pete, "vid1", writer)
+
+
+def test_clean_title_drops_hashtags():
+    assert clean_title("WHAT is this?! #gta6 #gtavi #theburntpeanut") == "WHAT is this?!"
+    assert clean_title("John Wins?! (Sings) #gta6") == "John Wins?! (Sings)"
+    assert clean_title("No #1 fan #gta6") == "No #1 fan"
+    assert clean_title("#gta6 #shorts") == ""
+
+
+def test_titles_with_hashtags_are_cleaned_before_saving(ck, ck_state, conn, cfg, streamers):
+    from gta6clips.llm import ClipsKittyTitles
+
+    _make_clips(ck)
+    for clip in ck_state.clips.values():
+        clip["title"] = "WHAT is this?! #gta6 #gtavi #theburntpeanut"
+    outcomes = postprocess_video(ck, conn, cfg, streamers[0], "vid1", ClipsKittyTitles())
+    assert all(o.title == "WHAT is this?!" for o in outcomes)
+    assert all(body["title"] == "WHAT is this?!" for _, body in ck_state.patches)
+    assert all("#GTA6" in body["hashtags"] for _, body in ck_state.patches)

@@ -7,6 +7,7 @@ in our database as pending_review. Nothing here publishes anything.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from dataclasses import dataclass, field
 
@@ -53,6 +54,14 @@ def with_credit(description: str, streamer: Streamer) -> str:
     if not has_credit(result, streamer):
         raise CreditError(f"Couldn't add {streamer.name}'s credit to the description")
     return result
+
+
+_HASHTAG = re.compile(r"(?<!\w)#[^\W\d]\w*")  # #word, not "#1"
+
+
+def clean_title(title: str) -> str:
+    """Drops hashtags from a title (Clips Kitty appends the job's tags there); they go in `hashtags`."""
+    return " ".join(_HASHTAG.sub("", title).split()).strip(" |-·")
 
 
 def merge_hashtags(existing: list[str], required: list[str]) -> list[str]:
@@ -123,6 +132,7 @@ def postprocess_video(client: ClipsKittyClient, conn: sqlite3.Connection, cfg: C
         try:
             suggestions = writer.write(brief)
             titles, hook = suggestions.titles, suggestions.hook
+            titles = [t for t in (clean_title(t) for t in titles) if t] or [f"{streamer.name} GTA 6 moment"]
         except TitleWriterError as exc:
             log.warning("Clip %s: %s. Keeping Clips Kitty's title.", clip_id, exc)
             notes.append(f"Title options unavailable: {exc}")
