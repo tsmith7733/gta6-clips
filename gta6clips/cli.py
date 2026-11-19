@@ -15,7 +15,7 @@ from .llm import ClaudeTitleWriter, ClipsKittyTitles, TitleWriter, TitleWriterEr
 from .logging_setup import setup_logging
 from .sources import SourceError
 from .streamers import PermissionDenied, StreamerFileError, load_streamers
-from .vod import JobFailed, NotReady, VodResult, resume_job, run_vod
+from .vod import JobFailed, NotGta6, NotReady, VodResult, resume_job, run_vod
 
 log = logging.getLogger("gta6clips")
 
@@ -34,6 +34,8 @@ def _parser() -> argparse.ArgumentParser:
     vod.add_argument("--no-wait", action="store_true",
                      help="queue it in Clips Kitty and return; collect later with 'wait JOB_ID'")
     vod.add_argument("--force", action="store_true", help="process again even if Clips Kitty already did")
+    vod.add_argument("--allow-non-gta", action="store_true",
+                     help="send it even though the title doesn't mention GTA 6")
 
     wait = sub.add_parser("wait", help="wait for a queued Clips Kitty job, then title and credit its clips")
     wait.add_argument("job_id", type=int)
@@ -99,7 +101,8 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         if args.command == "vod":
             result = run_vod(args.url, cfg=cfg, client=client, conn=conn, streamers=streamers,
-                             writer=writer, wait=not args.no_wait, force=args.force)
+                             writer=writer, wait=not args.no_wait, force=args.force,
+                             allow_non_gta=args.allow_non_gta)
         else:
             result = resume_job(args.job_id, cfg=cfg, client=client, conn=conn, streamers=streamers,
                                 writer=writer)
@@ -108,7 +111,7 @@ def main(argv: list[str] | None = None) -> int:
     except PermissionDenied as exc:
         log.error("%s", exc)
         return 3
-    except (StreamerFileError, NotReady, JobFailed, SourceError, ClipsKittyError, TitleWriterError) as exc:
+    except (StreamerFileError, NotReady, NotGta6, JobFailed, SourceError, ClipsKittyError, TitleWriterError) as exc:
         log.error("%s", exc)
         return 1
 

@@ -24,6 +24,10 @@ class NotReady(Exception):
     """Clips Kitty isn't safe or able to take work. The message lists what to fix."""
 
 
+class NotGta6(Exception):
+    """The video's title doesn't say it's GTA 6, so it isn't sent (unless overridden)."""
+
+
 class JobFailed(Exception):
     """Clips Kitty's job failed or timed out. The message includes its log."""
 
@@ -99,7 +103,7 @@ def _failure_text(client: ClipsKittyClient, job_id: int, error: str) -> str:
 
 def run_vod(url: str, *, cfg: Config, client: ClipsKittyClient, conn: sqlite3.Connection,
             streamers: list[Streamer], writer: TitleWriter, wait: bool = True, force: bool = False,
-            probe_fn: Callable[[str], SourceInfo] = probe,
+            allow_non_gta: bool = False, probe_fn: Callable[[str], SourceInfo] = probe,
             sleep: Callable[[float], None] = time.sleep) -> VodResult:
     info = probe_fn(url)
     # The gate: nothing reaches Clips Kitty unless this channel is permitted.
@@ -107,8 +111,14 @@ def run_vod(url: str, *, cfg: Config, client: ClipsKittyClient, conn: sqlite3.Co
     log.info("%s by %s: permitted (%s)", info.title or url, streamer.name,
              streamer.permission_source or "no source noted")
 
-    if not looks_like_gta6(f"{info.title} {info.description}", cfg.get("gta6.keywords", [])):
-        log.warning("The title and description don't mention GTA 6. Clipping anyway, but check the clips.")
+    # Title only: channel descriptions often mention games the stream isn't about.
+    if not looks_like_gta6(info.title, cfg.get("gta6.keywords", [])):
+        if not allow_non_gta:
+            raise NotGta6(
+                f"This video's title doesn't mention GTA 6, so it wasn't sent to Clips Kitty:\n  {info.title!r}\n"
+                "If it really is GTA 6, run the command again with --allow-non-gta."
+            )
+        log.warning("The title doesn't mention GTA 6; clipping anyway because of --allow-non-gta.")
 
     readiness = check_readiness(client, cfg)
     for warning in readiness.warnings:
