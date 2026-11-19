@@ -105,6 +105,9 @@ MIGRATIONS = {
         "local_path": "TEXT NOT NULL DEFAULT ''",
         "finder": "TEXT NOT NULL DEFAULT 'gta_plugin'",   # gta_plugin | clipskitty (the fallback)
     },
+    "clips": {
+        "review_from": "TEXT NOT NULL DEFAULT ''",   # pending_review | spoiler_hold before the owner decided
+    },
 }
 
 
@@ -112,11 +115,12 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def connect(path: Path) -> sqlite3.Connection:
+def connect(path: Path, *, threads: bool = False) -> sqlite3.Connection:
+    """threads=True: the connection may be used from several threads (the caller serialises access)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     # The watcher writes all the time while `scan`, `clips` and the review page read: WAL lets
     # readers and the writer work at once, and the timeout waits out a brief lock instead of failing.
-    conn = sqlite3.connect(path, timeout=30)
+    conn = sqlite3.connect(path, timeout=30, check_same_thread=not threads)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")
@@ -207,6 +211,59 @@ def clips_by_status(conn: sqlite3.Connection, status: str | None = None) -> list
     if status:
         return conn.execute("SELECT * FROM clips WHERE status = ? ORDER BY score DESC", (status,)).fetchall()
     return conn.execute("SELECT * FROM clips ORDER BY created_at DESC, score DESC").fetchall()
+
+
+# -- Phase 4: review decisions ---------------------------------------------------------
+
+# Which status the owner may move a clip to, from which. Publishing (Phase 5) is the only way
+# to `published`, and nothing moves a clip out of `published`.
+REVIEW_MOVES = {
+    "approved": ("pending_review", "spoiler_hold"),
+    "rejected": ("pending_review", "spoiler_hold", "approved"),
+    "pending_review": ("rejected", "approved"),        # undo, back to where it was reviewed from
+    "spoiler_hold": ("rejected", "approved"),           # (a spoiler goes back to the Spoilers tab)
+}
+
+
+class BadMove(ValueError):
+    pass
+
+
+def get_clip(conn: sqlite3.Connection, ck_clip_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM clips WHERE ck_clip_id = ?", (int(ck_clip_id),)).fetchone()
+
+
+def set_clip_status(conn: sqlite3.Connection, ck_clip_id: int, status: str, *, note: str = "",
+                    title: str | None = None) -> sqlite3.Row:
+    """The owner's decision on a clip. Refuses moves REVIEW_MOVES doesn't allow."""
+    row = get_clip(conn, ck_clip_id)
+    if row is None:
+        raise BadMove(f"we don't track clip {ck_clip_id}")
+    if row["status"] not in REVIEW_MOVES.get(status, ()):
+        raise BadMove(f"clip {ck_clip_id} is {row['status']}; it can't be moved to {status}")
+    notes = json.loads(row["notes"] or "[]")
+    if note:
+        notes.append(f"{_now()}: {note}")
+    review_from = row["status"] if row["status"] in ("pending_review", "spoiler_hold") else row["review_from"]
+    conn.execute("UPDATE clips SET status = ?, notes = ?, title = COALESCE(?, title), review_from = ?, "
+                 "updated_at = ? WHERE ck_clip_id = ?",
+                 (status, json.dumps(notes), title, review_from, _now(), int(ck_clip_id)))
+    conn.commit()
+    return get_clip(conn, ck_clip_id)
+
+
+def set_clip_title(conn: sqlite3.Connection, ck_clip_id: int, title: str) -> None:
+    conn.execute("UPDATE clips SET title = ?, updated_at = ? WHERE ck_clip_id = ?", (title, _now(), int(ck_clip_id)))
+    conn.commit()
+
+
+def follow_replaced_clip(conn: sqlite3.Connection, old_id: int, new_id: int, note: str) -> None:
+    """Clips Kitty rendered a clip again under a new id: move our row (and its decision) to it."""
+    row = get_clip(conn, old_id)
+    notes = json.loads(row["notes"] or "[]") + [f"{_now()}: {note}"]
+    conn.execute("UPDATE clips SET ck_clip_id = ?, notes = ?, updated_at = ? WHERE ck_clip_id = ?",
+                 (int(new_id), json.dumps(notes), _now(), int(old_id)))
+    conn.commit()
 
 
 # -- Phase 2: streams, chat and signals ---------------------------------------------

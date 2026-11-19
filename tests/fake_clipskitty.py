@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass, field
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 PLUGIN_ID = "colingpt9/gta-vi-highlights"
 
@@ -171,6 +171,21 @@ def create_app(state: FakeState) -> FastAPI:
         if clip is None:
             raise HTTPException(404, "no such clip")
         return {"lines": clip["lines"]}
+
+    @app.get("/media/{clip_id}")
+    def media(clip_id: int, request: Request):
+        clip = state.clips.get(clip_id)
+        if clip is None:
+            raise HTTPException(404, "no such clip")
+        data = f"fake mp4 for clip {clip_id} ".encode() * 40
+        rng = request.headers.get("range", "")
+        m = re.fullmatch(r"bytes=(\d+)-(\d*)", rng)
+        if not m:
+            return Response(data, media_type="video/mp4", headers={"Accept-Ranges": "bytes"})
+        start = int(m.group(1))
+        end = min(int(m.group(2)) if m.group(2) else len(data) - 1, len(data) - 1)
+        return Response(data[start:end + 1], status_code=206, media_type="video/mp4",
+                        headers={"Accept-Ranges": "bytes", "Content-Range": f"bytes {start}-{end}/{len(data)}"})
 
     @app.patch("/clips/{clip_id}")
     async def patch_clip(clip_id: int, request: Request):

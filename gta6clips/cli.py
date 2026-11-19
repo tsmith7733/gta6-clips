@@ -58,6 +58,11 @@ def _parser() -> argparse.ArgumentParser:
     watch.add_argument("--allow-non-gta", action="store_true",
                        help="record a permitted streamer even when the stream title doesn't mention GTA 6")
 
+    review = sub.add_parser("review", help="open the review page: watch clips, pick titles, approve or reject "
+                                           "(Phase 4)")
+    review.add_argument("--port", type=int, help="override review.port in config.yaml")
+    review.add_argument("--no-browser", action="store_true", help="don't open the page in the browser")
+
     wait = sub.add_parser("wait", help="wait for a queued Clips Kitty job, then title and credit its clips")
     wait.add_argument("job_id", type=int)
 
@@ -116,6 +121,9 @@ def main(argv: list[str] | None = None) -> int:
             return _check(cfg, client, streamers)
         if args.command == "clips":
             return _list_clips(conn, args.status)
+        if args.command == "review":
+            conn.close()
+            return _review(cfg, client, streamers, args)
 
         writer = make_title_writer(cfg)
         if writer is None:
@@ -226,6 +234,27 @@ def _list_clips(conn, status: str) -> int:
             print(f"    hook: {r['hook']}")
         for n in notes:
             print(f"    ! {n}")
+    return 0
+
+
+def _review(cfg, client, streamers, args) -> int:
+    import threading
+    import webbrowser
+
+    from .review.app import serve
+    from .review.service import ReviewService
+
+    port = args.port or int(cfg.get("review.port", 8770))
+    if port == 8765:
+        print("Port 8765 is Clips Kitty's. Pick another review.port.", file=sys.stderr)
+        return 2
+    service = ReviewService(conn=db.connect(cfg.path("paths.database"), threads=True), client=client,
+                            streamers=streamers)
+    url = f"http://127.0.0.1:{port}/"
+    print(f"Review page: {url}  (Ctrl+C stops it; nothing is published from it)")
+    if not args.no_browser:
+        threading.Timer(1.0, webbrowser.open, args=(url,)).start()
+    serve(service, client, port=port)
     return 0
 
 

@@ -112,6 +112,10 @@ live:
     max_windows_per_hour: 3    # then only a moment stronger than that hour's best gets through
     min_baseline_seconds: 300  # learn the stream's normal for 5 minutes before sending anything
 
+# Phase 4: the review page (python -m gta6clips review). Only ever on 127.0.0.1.
+review:
+  port: 8770                 # not 8765, which is Clips Kitty's
+
 # Clips that may show major story missions or the ending are held (status spoiler_hold)
 # and kept out of the main review queue. Free keyword check, no API key needed.
 spoilers:

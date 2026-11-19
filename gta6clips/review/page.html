@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clip Review</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1f; --muted: #6b6b70; --line: #e3e1dc;
+    --accent: #2f6f4f; --accent-ink: #ffffff; --danger: #a8322d; --warn-bg: #fff4d6; --warn-ink: #6b4e00;
+    --chip: #eeece7; --focus: #2f6f4f55;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141416; --panel: #1d1d20; --ink: #ececee; --muted: #9a9aa2; --line: #2e2e33;
+      --accent: #5fbf8a; --accent-ink: #0d1f15; --danger: #e0706a; --warn-bg: #3a3016; --warn-ink: #f1d58a;
+      --chip: #2a2a2f; --focus: #5fbf8a55;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--bg); border-bottom: 1px solid var(--line);
+           padding: 14px 20px 0; }
+  h1 { margin: 0 0 10px; font-size: 18px; font-weight: 650; }
+  h1 small { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 8px; }
+  nav { display: flex; gap: 4px; overflow-x: auto; }
+  nav button { border: 0; background: none; color: var(--muted); padding: 8px 12px 10px; font: inherit;
+               cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap; }
+  nav button.on { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+  nav .n { display: inline-block; min-width: 20px; padding: 0 6px; margin-left: 6px; border-radius: 10px;
+           background: var(--chip); font-size: 12px; text-align: center; }
+  main { padding: 20px; display: grid; gap: 18px; grid-template-columns: repeat(auto-fill, minmax(560px, 1fr)); }
+  .empty { color: var(--muted); padding: 40px 0; grid-column: 1 / -1; text-align: center; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px;
+          display: grid; grid-template-columns: 230px 1fr; gap: 16px; }
+  video { width: 230px; aspect-ratio: 9 / 16; background: #000; border-radius: 8px; }
+  .meta { color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 6px 12px; }
+  .meta b { color: var(--ink); font-weight: 600; }
+  .src { color: var(--muted); font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis;
+         white-space: nowrap; }
+  fieldset { border: 0; padding: 0; margin: 12px 0 0; }
+  legend { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 4px; }
+  label.opt { display: flex; gap: 8px; align-items: baseline; padding: 4px 0; cursor: pointer; }
+  input[type=text] { width: 100%; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line);
+                     border-radius: 6px; padding: 6px 8px; }
+  input[type=text]:focus, button:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
+  .count { font-size: 12px; color: var(--muted); text-align: right; }
+  .count.over { color: var(--danger); }
+  .notes { margin: 10px 0 0; padding: 8px 10px; background: var(--warn-bg); color: var(--warn-ink);
+           border-radius: 6px; font-size: 13px; }
+  .notes div + div { margin-top: 4px; }
+  details { margin-top: 10px; font-size: 13px; }
+  summary { cursor: pointer; color: var(--muted); }
+  details pre { white-space: pre-wrap; font: inherit; margin: 6px 0 0; }
+  .caps span { display: inline; }
+  .actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; align-items: center; }
+  .actions button { font: inherit; border-radius: 8px; padding: 7px 14px; cursor: pointer; border: 1px solid var(--line);
+                    background: var(--panel); color: var(--ink); }
+  .actions button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  .actions button.danger { color: var(--danger); }
+  .actions button:disabled { opacity: .5; cursor: default; }
+  .confirm { font-size: 13px; display: flex; gap: 6px; align-items: center; }
+  #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg);
+           padding: 10px 16px; border-radius: 8px; font-size: 14px; max-width: min(640px, 90vw); display: none; z-index: 5; }
+  #toast.err { background: var(--danger); color: #fff; }
+  @media (max-width: 640px) {
+    main { padding: 12px 16px; grid-template-columns: 1fr; }
+    .card { grid-template-columns: 1fr; }
+    video { width: 100%; max-width: 320px; justify-self: center; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Clip review <small>Nothing is published from here. Approved clips wait for the publish step.</small></h1>
+  <nav id="tabs"></nav>
+</header>
+<main id="list"></main>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script>
+const TABS = [
+  ["pending_review", "To review"], ["spoiler_hold", "Spoilers"], ["approved", "Approved"],
+  ["rejected", "Rejected"], ["published", "Published"],
+];
+let tab = "pending_review";
+try { tab = localStorage.getItem("review.tab") || tab; } catch (e) {}
+if (!TABS.some(t => t[0] === tab)) tab = "pending_review";
+
+const $ = (sel, el = document) => el.querySelector(sel);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+
+function toast(msg, err = false) {
+  const t = $("#toast");
+  t.textContent = msg; t.className = err ? "err" : ""; t.style.display = "block";
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = "none", err ? 7000 : 3000);
+}
+
+async function api(path, body) {
+  const opts = body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"},
+                                          body: JSON.stringify(body)};
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.detail || `${r.status}`);
+  return data;
+}
+
+function drawTabs(counts) {
+  $("#tabs").innerHTML = TABS.map(([id, label]) =>
+    `<button data-tab="${id}" class="${id === tab ? "on" : ""}">${label}<span class="n">${counts[id] ?? 0}</span></button>`).join("");
+}
+
+function card(c) {
+  const options = [...new Set([c.title, ...c.title_options].filter(Boolean))];
+  const open = c.status === "pending_review" || c.status === "spoiler_hold";
+  const decided = c.status === "approved" || c.status === "rejected";
+  const titleBlock = c.status === "published" || c.status === "rejected" ? `<p><b>${esc(c.title)}</b></p>` : `
+    <fieldset>
+      <legend>Title</legend>
+      ${options.map((t, i) => `<label class="opt"><input type="radio" name="t${c.id}" value="${esc(t)}" ${t === c.title ? "checked" : ""}>
+        <span>${esc(t)}</span></label>`).join("")}
+      <label class="opt"><input type="radio" name="t${c.id}" value="__own"><span>Write my own</span></label>
+      <input type="text" class="own" maxlength="140" placeholder="Your title" value="">
+      <div class="count"></div>
+    </fieldset>`;
+  const notes = c.notes.length ? `<div class="notes">${c.notes.map(n => `<div>${esc(n)}</div>`).join("")}</div>` : "";
+  const buttons = open ? `
+      ${c.status === "spoiler_hold" ? `<label class="confirm"><input type="checkbox" class="notspoiler"> Not a spoiler</label>` : ""}
+      <button class="primary" data-do="approve">Approve</button>
+      <button class="danger" data-do="reject">Reject</button>`
+    : c.status === "approved" ? `
+      <button data-do="title">Save title</button>
+      <button data-do="undo">Undo approval</button>
+      <button class="danger" data-do="reject">Reject</button>`
+    : decided ? `<button data-do="undo">Back to review</button>` : "";
+  return `<article class="card" data-id="${c.id}">
+    <video controls preload="metadata" src="/media/${c.id}"></video>
+    <div>
+      <div class="meta"><b>${esc(c.streamer)}</b><span>clip ${c.id}</span><span>${c.seconds}s</span>
+        <span>score ${c.score ?? "–"}</span></div>
+      <div class="src" title="${esc(c.source_title)}">${esc(c.source_title)}</div>
+      ${titleBlock}
+      ${notes}
+      <details class="capdetails"><summary>Captions</summary><div class="caps">Loading…</div></details>
+      <details><summary>Description and hashtags</summary><pre>${esc(c.description)}\n\n${esc(c.hashtags.join(" "))}</pre></details>
+      <div class="actions">${buttons}</div>
+    </div>
+  </article>`;
+}
+
+function chosenTitle(el) {
+  const picked = el.querySelector("input[type=radio]:checked");
+  if (!picked) return "";
+  return picked.value === "__own" ? $(".own", el).value.trim() : picked.value;
+}
+
+function wire(el) {
+  const own = $(".own", el), count = $(".count", el);
+  if (own) {
+    const update = () => {
+      const n = own.value.trim().length;
+      count.textContent = own.value ? `${n} / 100` : "";
+      count.classList.toggle("over", n > 100);
+    };
+    own.addEventListener("input", () => { el.querySelector('input[value="__own"]').checked = true; update(); });
+    own.addEventListener("focus", () => { el.querySelector('input[value="__own"]').checked = true; });
+  }
+  $(".capdetails", el).addEventListener("toggle", async e => {
+    if (!e.target.open || e.target.dataset.loaded) return;
+    e.target.dataset.loaded = "1";
+    try {
+      const {lines} = await api(`/api/clips/${el.dataset.id}/captions`);
+      $(".caps", el).textContent = lines.length ? lines.map(l => l.text).join(" · ") : "No captions.";
+    } catch (err) { $(".caps", el).textContent = `Couldn't load captions: ${err.message}`; }
+  });
+  el.querySelectorAll("[data-do]").forEach(b => b.addEventListener("click", () => act(el, b.dataset.do, b)));
+}
+
+async function act(el, what, button) {
+  const id = el.dataset.id;
+  const body = {};
+  if (what === "approve" || what === "title") {
+    body.title = chosenTitle(el);
+    if (!body.title) return toast("Pick a title or write your own.", true);
+    if (body.title.length > 100) return toast("YouTube titles can be at most 100 characters.", true);
+  }
+  if (what === "approve") body.confirm_spoiler = !!$(".notspoiler", el)?.checked;
+  el.querySelectorAll("button").forEach(b => b.disabled = true);
+  try {
+    const c = await api(`/api/clips/${id}/${what}`, body);
+    toast({approve: `Approved: ${c.title}`, reject: "Rejected", undo: "Moved back", title: "Title saved"}[what]);
+    await load();
+  } catch (err) {
+    toast(err.message, true);
+    el.querySelectorAll("button").forEach(b => b.disabled = false);
+  }
+}
+
+let shown = "";
+
+async function load(onlyIfChanged = false) {
+  try {
+    const data = await api(`/api/clips?status=${tab}`);
+    drawTabs(data.counts);
+    const ids = tab + ":" + data.clips.map(c => `${c.id}/${c.status}`).join(",");
+    if (onlyIfChanged && ids === shown) return;   // keep players and typed titles as they are
+    shown = ids;
+    if (data.followed?.length) toast(`Followed ${data.followed.length} clip(s) Clips Kitty rendered again.`);
+    const list = $("#list");
+    list.innerHTML = data.clips.length ? data.clips.map(card).join("")
+      : `<p class="empty">Nothing here.</p>`;
+    list.querySelectorAll(".card").forEach(wire);
+  } catch (err) { toast(`Couldn't load clips: ${err.message}`, true); }
+}
+
+$("#tabs").addEventListener("click", e => {
+  const b = e.target.closest("button[data-tab]");
+  if (!b) return;
+  tab = b.dataset.tab;
+  try { localStorage.setItem("review.tab", tab); } catch (e) {}
+  load();
+});
+
+// New clips arrive while a stream is being watched: refresh the counts, and redraw the list
+// only when its clips changed and nothing on it is being edited or played.
+setInterval(async () => {
+  const busy = document.activeElement?.closest?.(".card") || [...document.querySelectorAll("video")].some(v => !v.paused);
+  if (busy) {
+    try { drawTabs((await api(`/api/clips?status=${tab}`)).counts); } catch (e) {}
+  } else load(true);
+}, 30000);
+
+load();
+</script>
+</body>
+</html>

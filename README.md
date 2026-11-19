@@ -9,8 +9,8 @@ without your approval.
 |---|---|---|
 | 1 | One recorded stream → Clips Kitty → credited, titled clips waiting for review | ✅ built |
 | 2 | Chat and audio spike scoring, spoiler filter | ✅ done, tested on a 19 h GTA 6 stream |
-| 3 | Watch live streams and record several at once | ✅ built (YouTube), waiting for a first real live run |
-| 4 | Review page | |
+| 3 | Watch live streams and record several at once | ✅ done (YouTube), tested on a live GTA 6 stream |
+| 4 | Review page | ✅ built |
 | 5 | Publish approved clips (private or scheduled) | |
 
 ## The rules it enforces
@@ -175,16 +175,36 @@ Leave it running, with Clips Kitty open and the PC awake (set Windows sleep to N
 
 **It's pickier than `scan`.** A VOD scan sees the whole stream before choosing; live it has to decide as it goes, so a moment is sent only when:
 
-- its score is over `threshold` under `live: selection:` in `config.yaml` (7 by default),
+- its score is over `threshold` under `live: selection:` in `config.yaml` (4 by default),
 - at least two signals agree (chat speed, hype words, loudness), so a raid saying hi or a loud game sound on its own isn't enough,
 - it's the strongest moment in its 8 minutes, and
 - no more than 3 windows went out that hour, unless it beats all of them.
 
-After 90 minutes with nothing sent, the bar drops to 6, so a quieter stream still gets its best moments. Replayed minute by minute on the 19-hour GTA 6 stream, these settings sent 17 windows, and those included all 12 of its strongest moments.
+After 45 minutes with nothing sent, the bar drops to 3.5, so a quieter stream still gets its best moments. His live chat is busy all the time, so a big laugh scores about 4–4.5 live; replayed minute by minute on the 19-hour GTA 6 stream, these settings sent about 30 windows, including 11 of its 12 strongest moments.
+
+**Funny moments.** The GTA plugin only spots physical events (chases, crashes) in what's said, so it finds nothing in a moment that's funny because of a line he says. When that happens the window goes once more to Clips Kitty's own moment finder, which follows the "funny first" `focus` text in `config.yaml` and runs on Clips Kitty's AI setting (local Ollama here, so free). Turn it off with `fallback_to_clipskitty_finder: false`.
+
+**GPU memory.** Clips Kitty's Ollama model, its Whisper transcription and its rendering share the graphics card. With gemma3:27b loaded (about 17 GB), transcription falls back to the CPU (weak captions) and after a few jobs renders fail with "CUDA error" (0 clips) until Clips Kitty is restarted. A smaller model (Settings → AI, for example gemma3:12b) avoids it.
 
 **Disk space:** recordings take about 4 GB an hour at 1080p. Pieces older than 2 hours are deleted (`retention_hours`). The windows sent to Clips Kitty are kept in `data\windows`.
 
 **Other games:** a stream whose title doesn't mention GTA 6 isn't recorded. `--allow-non-gta` records it anyway (handy for a test). If he switches games mid-stream, the recording stops after two checks in a row (about 5 minutes).
+
+## Review clips (Phase 4)
+
+```powershell
+.venv\Scripts\python.exe -m gta6clips review
+```
+
+Opens a page in your browser at `http://127.0.0.1:8770` (change the port with `review: port:` in `config.yaml`). It only answers on this PC.
+
+- **To review**: watch each clip, pick one of its titles or write your own (up to 100 characters), then **Approve** or **Reject**. Captions and the description (with the credit line) are under each clip.
+- **Spoilers**: clips held as possible spoilers. To approve one, tick **Not a spoiler** first. Undoing a decision on a spoiler puts it back here, never in the main list.
+- **Approved** and **Rejected**: change a title, or undo the decision.
+
+Approving writes the chosen title to Clips Kitty and checks that the clip's description there still has the streamer's credit; it refuses if the credit was removed. Nothing is published from this page: approved clips wait for the publish step (Phase 5).
+
+Fine edits (framing, captions, trimming) happen in the Clips Kitty studio. When you re-render a clip there, Clips Kitty gives it a new number; the page notices and follows it, keeping your decision. The list refreshes itself every 30 seconds while `watch` adds clips.
 
 ## Streamers
 
