@@ -40,6 +40,25 @@ class Streamer:
     priority: int = 100
     permission_source: str = ""
     keys: frozenset[str] = field(default=frozenset(), compare=False)
+    clipskitty_creator_override: str = ""
+
+    @property
+    def clipskitty_creator(self) -> str:
+        """The creator name Clips Kitty files this channel under ("TheBurntPeanut").
+
+        Sent as `channel` with local windows: Clips Kitty matches creator profiles,
+        including a remembered gaming layout (the webcam/avatar box), by it. Clips Kitty
+        names YouTube creators by their @handle without the '@', and Twitch/Kick by login.
+        streamers.yaml can set `clipskitty_creator` when that guess is wrong.
+        """
+        if self.clipskitty_creator_override:
+            return self.clipskitty_creator_override
+        path = urlparse(self.channel_url).path if "://" in self.channel_url else self.channel_url
+        parts = [p for p in path.split("/") if p]
+        if self.platform == "youtube":
+            handle = next((p for p in parts if p.startswith("@")), "")
+            return handle.lstrip("@") or self.name
+        return parts[0].lstrip("@") if parts else self.name
 
     @property
     def hashtag(self) -> str:
@@ -113,6 +132,7 @@ def _entry_to_streamer(entry: dict, index: int) -> Streamer:
         priority=priority,
         permission_source=str(entry.get("permission_source") or ""),
         keys=frozenset(keys),
+        clipskitty_creator_override=str(entry.get("clipskitty_creator") or "").strip(),
     )
 
 

@@ -23,6 +23,8 @@ class SourceInfo:
     channel_name: str
     channel_values: tuple[str, ...]   # everything that identifies the channel (urls, @handle, id)
     duration: float | None
+    start_utc: float | None = None   # when the stream started (UTC epoch seconds), if known
+    live_status: str = ""            # yt-dlp's: is_live | was_live | not_live | is_upcoming | post_live
 
 
 def platform_of(url: str) -> str:
@@ -64,7 +66,16 @@ def probe(url: str) -> SourceInfo:
         channel_name=str(info.get("channel") or info.get("uploader") or ""),
         channel_values=channel_values,
         duration=info.get("duration"),
+        start_utc=_float_or_none(info.get("release_timestamp") or info.get("timestamp")),
+        live_status=str(info.get("live_status") or ""),
     )
+
+
+def _float_or_none(value) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def looks_like_gta6(text: str, keywords: list[str]) -> bool:

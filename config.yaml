@@ -5,6 +5,12 @@ paths:
   streamers: streamers.yaml
   database: data/orchestrator.db
   logs: logs
+  # ffmpeg.exe, or the folder that holds it. Empty: use the ffmpeg on PATH.
+  ffmpeg: ""
+  # Chat replays and audio downloaded while scanning (audio is deleted after measuring).
+  cache: data/cache
+  # The cut windows sent to Clips Kitty.
+  windows: data/windows
 
 clipskitty:
   # Clips Kitty's local API. Must stay on 127.0.0.1 / localhost: it has no
@@ -38,6 +44,48 @@ clips:
 metadata:
   # Every clip carries these, plus a hashtag of the streamer's name.
   hashtags: ["#GTA6", "#GTAVI", "#Shorts"]
+
+# Phase 2: which moments of a stream are worth sending (python -m gta6clips scan <url>).
+# Each signal is compared with the same stream's own recent baseline, so big and
+# small channels are judged on their own normal.
+scoring:
+  bin_seconds: 5            # the stream is scored in slices this long
+  smooth_bins: 3            # averaged over this many slices, so one odd slice isn't a spike
+  baseline_seconds: 600     # "normal" is the previous 10 minutes
+  min_baseline_seconds: 120 # nothing counts as a spike in the first 2 minutes
+  z_cap: 6                  # one signal can't dominate the score beyond this
+  threshold: 2.5            # combined score a moment needs to be sent
+  weights:                  # re-balanced automatically when a signal is missing (no chat replay, say)
+    chat: 0.45              # messages per slice
+    keywords: 0.35          # messages with one of the words below
+    audio: 0.2              # loudness (yelling, crashes)
+  # Hype words in chat. Whole words, any case. "re:" starts a regular expression.
+  # Regular expressions go in single quotes so YAML leaves the backslashes alone.
+  chat_keywords: ["clip it", "clip that", "clipped", "kekw", "lul", "lmao", "lmfao", "omegalul",
+                  "no way", "wtf", "bruh", "holy", "insane", "💀", "😂", "🤣", ":face-with-tears-of-joy:",
+                  're:\?{3,}', 're:\b(?:ha){3,}\b', 're:\bl+o+l+\b']
+
+windows:
+  lead_in_seconds: 120   # chat reacts after the moment, so start well before the spike
+  tail_seconds: 60
+  max_seconds: 240       # nearby spikes merge into one window up to this length
+  max_per_stream: 6      # the best N windows of a VOD (Clips Kitty runs one job at a time)
+  max_clips: 2           # clips Clips Kitty may make from one window
+  # yt-dlp format for the cut windows: up to 1080p, video + audio merged to mp4.
+  # H.264 (avc1) first: Clips Kitty converts AV1 to H.264 before working, which is slow.
+  video_format: "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b"
+
+# Clips that may show major story missions or the ending are held (status spoiler_hold)
+# and kept out of the main review queue. Free keyword check, no API key needed.
+spoilers:
+  # Checked in the stream title, the clip's title and its transcript; one hit holds the clip.
+  keywords: ["spoiler", "spoilers", "ending", "final mission", "last mission", "end credits",
+             "credits roll", "epilogue", "finale", "plot twist", "story mission", "main mission",
+             "cutscene"]
+  # Checked in chat around the clip; it takes chat_min_hits messages to hold it.
+  chat_keywords: ["spoiler", "spoilers", "ending", "final mission", "last mission", "credits", "finale",
+                  "plot twist", "cutscene"]
+  chat_min_hits: 3
 
 gta6:
   # Words that mark a video or stream as GTA 6 (YouTube doesn't expose the game).

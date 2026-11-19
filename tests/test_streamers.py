@@ -78,3 +78,18 @@ def test_repo_streamers_file_is_valid():
     from gta6clips.config import REPO_ROOT
 
     assert load_streamers(REPO_ROOT / "streamers.yaml")
+
+
+def test_clipskitty_creator_name(tmp_path):
+    from gta6clips.streamers import load_streamers
+    path = tmp_path / "streamers.yaml"
+    path.write_text("""
+streamers:
+  - {name: The Burnt Peanut, platform: youtube, channel_url: "https://www.youtube.com/@TheBurntPeanut",
+     permission: true, credit: c}
+  - {name: Some One, platform: twitch, channel_url: "https://www.twitch.tv/someone", permission: true, credit: c}
+  - {name: Over Ride, platform: youtube, channel_url: "https://www.youtube.com/@x", permission: true, credit: c,
+     clipskitty_creator: "Custom Name"}
+""", encoding="utf-8")
+    names = [s.clipskitty_creator for s in load_streamers(path)]
+    assert names == ["TheBurntPeanut", "someone", "Custom Name"]

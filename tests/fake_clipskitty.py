@@ -5,6 +5,7 @@ Only what the orchestrator uses. Tests drive it through FakeState.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from fastapi import FastAPI, HTTPException, Request
@@ -107,7 +108,9 @@ def create_app(state: FakeState) -> FastAPI:
     @app.post("/videos/local")
     async def post_local(request: Request):
         body = await request.json()
-        return _queue(body, "local_" + body["path"].rsplit("/", 1)[-1])
+        if not body.get("path") or not body.get("title"):
+            raise HTTPException(422, "path and title required")
+        return _queue(body, "local_" + re.split(r"[\\/]", body["path"])[-1])
 
     def _finish(job: dict) -> None:
         if state.fail_jobs:

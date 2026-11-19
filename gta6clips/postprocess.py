@@ -10,11 +10,13 @@ import logging
 import re
 import sqlite3
 from dataclasses import dataclass, field
+from typing import Callable
 
 from . import db
 from .clipskitty import ClipsKittyClient
 from .config import Config
 from .llm import ClipBrief, TitleWriter, TitleWriterError
+from .spoilers import KeywordSpoilerCheck, SpoilerCheck
 from .streamers import Streamer, require_permission
 
 log = logging.getLogger(__name__)
@@ -95,13 +97,19 @@ class ClipOutcome:
 
 def postprocess_video(client: ClipsKittyClient, conn: sqlite3.Connection, cfg: Config, streamer: Streamer,
                       ck_video_id: str, writer: TitleWriter, *, window_id: int | None = None,
-                      source_title: str = "", refresh: bool = False) -> list[ClipOutcome]:
-    """Credits, tags and titles every clip of one Clips Kitty video.
+                      source_title: str = "", refresh: bool = False,
+                      spoilers: SpoilerCheck | None = None,
+                      chat_for: Callable[[float, float], list[str]] | None = None) -> list[ClipOutcome]:
+    """Credits, tags and titles every clip of one Clips Kitty video, and holds possible spoilers.
+
+    `chat_for(start_s, end_s)` returns the chat around a clip (times within this video),
+    for the spoiler check; without it only titles and the transcript are checked.
 
     Clips already in our database are skipped (titles cost an API call), unless
     refresh=True. Clips the owner already approved, rejected or published are never touched.
     """
     require_permission(streamer)
+    spoilers = spoilers or KeywordSpoilerCheck.from_config(cfg)
     tags = required_hashtags(cfg, streamer)
     min_s = float(cfg.get("clips.min_seconds", 15))
     max_s = float(cfg.get("clips.max_seconds", 45))
@@ -138,16 +146,25 @@ def postprocess_video(client: ClipsKittyClient, conn: sqlite3.Connection, cfg: C
             notes.append(f"Title options unavailable: {exc}")
             titles, hook = [brief.clipskitty_title or f"{streamer.name} GTA 6 moment"], ""
 
+        verdict = spoilers.check(source_title=source_title, clip_title=brief.clipskitty_title,
+                                 transcript=transcript, chat=chat_for(start_s, end_s) if chat_for else [])
+        status = "spoiler_hold" if verdict.hold else "pending_review"
+        if verdict.hold:
+            notes.append(verdict.reason)
+
         description = with_credit(str(clip.get("description") or ""), streamer)
         hashtags = merge_hashtags(list(clip.get("hashtags") or []), tags)
         client.patch_clip(clip_id, title=titles[0], description=description, hashtags=hashtags)
 
         db.upsert_clip(
             conn, ck_clip_id=clip_id, window_id=window_id, ck_video_id=ck_video_id, streamer=streamer.name,
-            status="pending_review", score=clip.get("score"), start_s=start_s, end_s=end_s,
+            status=status, score=clip.get("score"), start_s=start_s, end_s=end_s,
             title=titles[0], title_options=titles, hook=hook, description=description,
             hashtags=hashtags, notes=notes,
         )
-        log.info("Clip %s ready for review: %s", clip_id, titles[0])
-        outcomes.append(ClipOutcome(clip_id, titles[0], "pending_review", notes))
+        if verdict.hold:
+            log.info("Clip %s held as a possible spoiler: %s", clip_id, verdict.reason)
+        else:
+            log.info("Clip %s ready for review: %s", clip_id, titles[0])
+        outcomes.append(ClipOutcome(clip_id, titles[0], status, notes))
     return outcomes

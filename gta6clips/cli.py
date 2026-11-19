@@ -11,8 +11,12 @@ from . import db
 from .clipskitty import ClipsKittyClient, ClipsKittyError
 from .clipskitty.readiness import check_readiness
 from .config import ConfigError, env, load_config
+from .downloads import DownloadError, YtDlpFetcher
 from .llm import ClaudeTitleWriter, ClipsKittyTitles, TitleWriter, TitleWriterError
 from .logging_setup import setup_logging
+from .media import MediaToolMissing, find_ffmpeg
+from .scan import ScanError, ScanResult, run_scan
+from .scoring import clock
 from .sources import SourceError
 from .streamers import PermissionDenied, StreamerFileError, load_streamers
 from .vod import JobFailed, NotGta6, NotReady, VodResult, resume_job, run_vod
@@ -36,6 +40,17 @@ def _parser() -> argparse.ArgumentParser:
     vod.add_argument("--force", action="store_true", help="process again even if Clips Kitty already did")
     vod.add_argument("--allow-non-gta", action="store_true",
                      help="send it even though the title doesn't mention GTA 6")
+
+    scan = sub.add_parser("scan", help="score a recorded stream on chat and audio, clip only its best "
+                                       "moments (Phase 2)")
+    scan.add_argument("url", help="YouTube video link (Twitch/Kick: audio only for now)")
+    scan.add_argument("--dry-run", action="store_true",
+                      help="score it and list the windows, but don't cut or send anything")
+    scan.add_argument("--no-wait", action="store_true",
+                      help="send the windows and return; run the same command again to collect them")
+    scan.add_argument("--max-windows", type=int, help="override windows.max_per_stream")
+    scan.add_argument("--allow-non-gta", action="store_true",
+                      help="scan it even though the title doesn't mention GTA 6")
 
     wait = sub.add_parser("wait", help="wait for a queued Clips Kitty job, then title and credit its clips")
     wait.add_argument("job_id", type=int)
@@ -71,6 +86,9 @@ def _print_result(result: VodResult) -> None:
     for c in made:
         flag = f"   ! {'; '.join(c.notes)}" if c.notes else ""
         print(f"  [{c.ck_clip_id}] {c.title}{flag}")
+    held = sum(c.status == "spoiler_hold" for c in made)
+    if held:
+        print(f"{held} of them held as possible spoilers: python -m gta6clips clips --status spoiler_hold")
     print("\nNothing is published. Review them with: python -m gta6clips clips")
 
 
@@ -99,6 +117,15 @@ def main(argv: list[str] | None = None) -> int:
                   "Add your key to .env, or set llm.enabled: false to keep Clips Kitty's titles.",
                   file=sys.stderr)
             return 2
+        if args.command == "scan":
+            fetcher = YtDlpFetcher(ffmpeg=find_ffmpeg(cfg), cache_dir=cfg.path("paths.cache"),
+                                   video_format=str(cfg.get("windows.video_format") or "b"))
+            scanned = run_scan(args.url, cfg=cfg, client=client, conn=conn, streamers=streamers, writer=writer,
+                               fetcher=fetcher, windows_dir=cfg.path("paths.windows"), dry_run=args.dry_run,
+                               wait=not args.no_wait, allow_non_gta=args.allow_non_gta,
+                               max_windows=args.max_windows)
+            _print_scan(scanned)
+            return 0
         if args.command == "vod":
             result = run_vod(args.url, cfg=cfg, client=client, conn=conn, streamers=streamers,
                              writer=writer, wait=not args.no_wait, force=args.force,
@@ -111,9 +138,42 @@ def main(argv: list[str] | None = None) -> int:
     except PermissionDenied as exc:
         log.error("%s", exc)
         return 3
-    except (StreamerFileError, NotReady, NotGta6, JobFailed, SourceError, ClipsKittyError, TitleWriterError) as exc:
+    except MediaToolMissing as exc:
+        log.error("%s", exc)
+        return 2
+    except (StreamerFileError, NotReady, NotGta6, JobFailed, SourceError, ClipsKittyError, TitleWriterError,
+            ScanError, DownloadError) as exc:
         log.error("%s", exc)
         return 1
+
+
+def _print_scan(result: ScanResult) -> None:
+    chat = "no chat replay" if result.chat_messages is None else f"{result.chat_messages} chat messages"
+    print(f"\n{result.streamer}: {result.title}\n  scored on {chat}, audio {'yes' if result.audio else 'no'}")
+    if not result.windows:
+        print("  No moment stood out enough to send. Lower scoring.threshold in config.yaml to send more.")
+        return
+    verb = "Would send" if result.planned_only else "Windows"
+    print(f"  {verb}:")
+    for w in result.windows:
+        print(f"    {clock(w.start_s)}-{clock(w.end_s)}  [{w.state}]  {w.reasons}")
+        if w.error:
+            print(f"      ! {w.error.splitlines()[0]}")
+        for c in w.clips:
+            if c.skipped:
+                continue
+            flag = f"   ! {'; '.join(c.notes)}" if c.notes else ""
+            print(f"      [{c.ck_clip_id}] ({c.status}) {c.title}{flag}")
+    if result.queue_full:
+        print("\nClips Kitty's queue filled up. Run the same command again later to send the rest.")
+    if not result.waited:
+        print("\nSent. Run the same command again to collect the clips once Clips Kitty is done.")
+    clips = [c for w in result.windows for c in w.clips if not c.skipped]
+    held = sum(c.status == "spoiler_hold" for c in clips)
+    if clips:
+        print(f"\n{len(clips) - held} clip(s) ready for review, {held} held as possible spoilers. "
+              "Nothing is published.\nReview: python -m gta6clips clips   "
+              "Spoilers: python -m gta6clips clips --status spoiler_hold")
 
 
 def _check(cfg, client: ClipsKittyClient, streamers) -> int:
@@ -125,6 +185,10 @@ def _check(cfg, client: ClipsKittyClient, streamers) -> int:
         print(f"Claude titles: on, API key {'set' if env('ANTHROPIC_API_KEY') else 'MISSING (add it to .env)'}")
     else:
         print("Claude titles: off (clips keep Clips Kitty's titles; set llm.enabled: true to turn on)")
+    try:
+        print(f"ffmpeg: {find_ffmpeg(cfg)}")
+    except MediaToolMissing as exc:
+        print(f"ffmpeg: MISSING (needed by 'scan'). {exc}")
     try:
         readiness = check_readiness(client, cfg)
     except ClipsKittyError as exc:

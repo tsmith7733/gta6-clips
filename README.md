@@ -8,7 +8,7 @@ without your approval.
 | Phase | What it does | Status |
 |---|---|---|
 | 1 | One recorded stream → Clips Kitty → credited, titled clips waiting for review | ✅ built |
-| 2 | Chat and audio spike scoring, spoiler filter | next |
+| 2 | Chat and audio spike scoring, spoiler filter | ✅ built, waiting for a first real GTA 6 run |
 | 3 | Watch live streams and record several at once | |
 | 4 | Review page | |
 | 5 | Publish approved clips (private or scheduled) | |
@@ -132,6 +132,36 @@ To see clips waiting for review:
 ```
 
 Watch and fine-tune the clips in Clips Kitty's studio. Nothing is uploaded.
+
+## Clip only the best moments (Phase 2)
+
+Instead of sending a whole stream, `scan` finds the moments where chat blew up (lots of messages, "CLIP IT", "KEKW", "?????") or the streamer got loud. It sends just those few minutes to Clips Kitty, which is much faster.
+
+It needs **ffmpeg**. Install it once:
+
+```powershell
+winget install Gyan.FFmpeg
+```
+
+Then open a new PowerShell window. Or download a portable ffmpeg and put the path to its `ffmpeg.exe` under `paths: ffmpeg:` in `config.yaml`. `check` tells you whether it's found.
+
+First, see what it would pick without sending anything:
+
+```powershell
+.venv\Scripts\python.exe -m gta6clips scan "https://www.youtube.com/watch?v=VIDEO_ID" --dry-run
+```
+
+It downloads the chat replay and the audio (the audio is deleted after it's measured) and lists the moments with their times. If that looks right, run it again without `--dry-run`. It downloads just those minutes of video, sends them to Clips Kitty, and saves the clips for review. Running the same command again never sends a moment twice: it picks up anything left over, such as a full queue or a failed download.
+
+Too many or too few moments? Change `threshold` under `scoring:` in `config.yaml` (lower sends more). YouTube streams use chat and audio. Twitch and Kick streams use audio only for now.
+
+**Spoilers:** a clip whose stream title, clip title or speech mentions things like "ending", "final mission" or "spoilers", or with several spoiler messages in chat around it, is held as a possible spoiler. It stays out of the main list:
+
+```powershell
+.venv\Scripts\python.exe -m gta6clips clips --status spoiler_hold
+```
+
+The words are under `spoilers:` in `config.yaml`. This applies to `vod` too.
 
 ## Streamers
 
