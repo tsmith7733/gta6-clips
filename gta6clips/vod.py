@@ -101,6 +101,8 @@ def run_vod(url: str, *, cfg: Config, client: ClipsKittyClient, conn: sqlite3.Co
         log.warning("The title and description don't mention GTA 6. Clipping anyway, but check the clips.")
 
     readiness = check_readiness(client, cfg)
+    for warning in readiness.warnings:
+        log.warning("%s", warning)
     if not readiness.ok:
         raise NotReady("Clips Kitty isn't ready:\n- " + "\n- ".join(readiness.problems))
 

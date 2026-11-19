@@ -79,8 +79,5 @@ def check_readiness(client: ClipsKittyClient, cfg: Config) -> Readiness:
             text = problem.get("text") if isinstance(problem, dict) else str(problem)
             result.problems.append(f"The GTA plugin can't run here: {text}")
 
-    for w in result.warnings:
-        log.warning(w)
-    for p in result.problems:
-        log.error(p)
+    # Callers decide how to show these (the check command prints them, vod logs them).
     return result
