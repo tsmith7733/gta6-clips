@@ -35,8 +35,8 @@ class ScoringSettings:
     smooth_bins: int = 3
     baseline_s: float = 600.0
     min_baseline_s: float = 120.0
-    z_cap: float = 6.0
-    threshold: float = 2.5
+    z_cap: float = 12.0
+    threshold: float = 4.5
     weights: dict[str, float] = field(default_factory=lambda: {"chat": 0.45, "keywords": 0.35, "audio": 0.2})
     keywords: tuple[str, ...] = ()
 

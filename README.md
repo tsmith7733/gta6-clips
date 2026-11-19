@@ -8,7 +8,7 @@ without your approval.
 | Phase | What it does | Status |
 |---|---|---|
 | 1 | One recorded stream → Clips Kitty → credited, titled clips waiting for review | ✅ built |
-| 2 | Chat and audio spike scoring, spoiler filter | ✅ built, waiting for a first real GTA 6 run |
+| 2 | Chat and audio spike scoring, spoiler filter | ✅ done, tested on a 19 h GTA 6 stream |
 | 3 | Watch live streams and record several at once | |
 | 4 | Review page | |
 | 5 | Publish approved clips (private or scheduled) | |

@@ -53,8 +53,8 @@ scoring:
   smooth_bins: 3            # averaged over this many slices, so one odd slice isn't a spike
   baseline_seconds: 600     # "normal" is the previous 10 minutes
   min_baseline_seconds: 120 # nothing counts as a spike in the first 2 minutes
-  z_cap: 6                  # one signal can't dominate the score beyond this
-  threshold: 2.5            # combined score a moment needs to be sent
+  z_cap: 12                 # one signal can't dominate beyond this; 6 flattened the top spikes into ties
+  threshold: 4.5            # combined score a moment needs to be sent (12 spikes on 7.7 h Rob Run, 57 on 19.4 h GTA 6)
   weights:                  # re-balanced automatically when a signal is missing (no chat replay, say)
     chat: 0.45              # messages per slice
     keywords: 0.35          # messages with one of the words below
