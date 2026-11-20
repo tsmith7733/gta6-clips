@@ -40,8 +40,9 @@ clipskitty:
       with cops, his reactions to the radio, TV, gore or a bug, dumb plans going
       wrong, crashes, chaotic physics, insane stunts. Prefer a joke with its
       punchline and his reaction over plain action. Skip story cutscenes and
-      game-character dialogue. Start on the setup within 2 seconds, keep it 20-60
-      seconds, end right after the payoff and his reaction.
+      game-character dialogue. The owner trims every clip by hand, so leave slack:
+      start 10-15 seconds before the setup and keep going 10-15 seconds after
+      the payoff and his reaction, 40-90 seconds in all.
   # How often to ask Clips Kitty whether a job is finished, and for how long.
   poll_seconds: 30
   job_timeout_hours: 6
@@ -50,8 +51,10 @@ clips:
   # Our target length. Clips outside it are kept but flagged for review.
   # Launch-week GTA 6 streamer clips that did best on YouTube ran 40-105 s (median ~50 s): long
   # enough for the setup, the payoff and the reaction.
+  # Clips come with 10-15 s of slack on each side for the owner to trim (focus text above),
+  # so the target allows for that.
   min_seconds: 15
-  max_seconds: 60
+  max_seconds: 90
 
 metadata:
   # Every clip carries these, plus a hashtag of the streamer's name.

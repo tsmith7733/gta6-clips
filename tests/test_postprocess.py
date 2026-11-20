@@ -55,6 +55,7 @@ def test_postprocess_titles_credits_and_tags_every_clip(ck, ck_state, conn, cfg,
 
 
 def test_long_clip_is_flagged_not_dropped(ck, ck_state, conn, cfg, streamers, writer):
+    cfg.data["clips"]["max_seconds"] = 60
     _make_clips(ck)
     outcomes = postprocess_video(ck, conn, cfg, streamers[0], "vid1", writer)
     long_one = [o for o in outcomes if o.notes]
