@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
-from .. import db
+from .. import db, notify
 from ..clipskitty import ClipsKittyClient, ClipsKittyError
 from ..config import Config
 from ..postprocess import has_credit
@@ -298,6 +298,7 @@ class PublishService:
                                                      f"{actual!r}")
                 log.warning("Clip %s: asked for private until %s, YouTube reports %r", clip_id, when, actual)
             db.mark_published(self.conn, clip_id, f"on YouTube, scheduled for {when}: {link}")
+            notify.current().published(f"📅 Uploaded **{row['title']}**: private until {when}, then public. {link}")
         elif state == "locked_private":
             db.mark_published(self.conn, clip_id, f"on YouTube but LOCKED PRIVATE by YouTube (unaudited Google "
                                                   f"Cloud project); it won't go public at {when}: {link}")

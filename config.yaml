@@ -143,6 +143,17 @@ publish:
   # stops. Set true only if you're fine with private-only uploads (making them public by hand fails too).
   accept_locked_private: false
 
+# Phone notifications through a Discord webhook. Put the webhook link in .env as
+# DISCORD_WEBHOOK_URL (Discord: channel settings → Integrations → Webhooks → New Webhook →
+# Copy Webhook URL). Nothing is sent while it's unset.
+notify:
+  discord: true
+  new_clips: true            # a clip is ready for review (or held as a spoiler)
+  live: true                 # a stream started or stopped recording
+  published: true            # an upload went through (with its YouTube link and time)
+  problems: true             # warnings and errors, e.g. recording or a render failing
+  problem_repeat_minutes: 30 # the same problem at most this often
+
 # Clips that may show major story missions or the ending are held (status spoiler_hold)
 # and kept out of the main review queue. Free keyword check, no API key needed.
 spoilers:

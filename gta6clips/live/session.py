@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Callable, Protocol, Sequence
 
-from .. import db
+from .. import db, notify
 from ..chat import ChatMessage
 from ..scoring import ScoringSettings, WindowSettings
 from ..scoring import clock as _clock
@@ -80,6 +80,8 @@ class LiveSession:
         db.set_stream_status(self.conn, self.stream_id, chat="ok" if self.chat_feed else "unsupported",
                              audio="ok")
         log.info("%s is live in GTA 6: recording %r", self.streamer.name, self.title)
+        notify.current().live(f"🔴 {self.streamer.name} is live in GTA 6: recording and watching for moments. "
+                              f"({self.title[:120]})")
         self.recorder.start()
         if self.chat_feed is not None:
             self.chat_feed.start()
@@ -105,6 +107,8 @@ class LiveSession:
             self.conn.commit()
         log.info("Stopped recording %s (%d windows sent from this stream)", self.streamer.name,
                  len(self.selector.sent))
+        notify.current().live(f"⏹️ Stopped recording {self.streamer.name} ({len(self.selector.sent)} moment(s) sent "
+                              "to Clips Kitty from this stream).")
         return decisions
 
     def _ingest(self, segments: list[Segment], messages: list[ChatMessage]) -> None:

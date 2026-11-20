@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from .. import db
+from .. import db, notify
 from ..clipskitty import ClipsKittyClient, ClipsKittyError, QueueFull
 from ..clipskitty.readiness import check_readiness
 from ..config import Config
@@ -171,3 +171,8 @@ class Dispatcher:
             for o in outcomes:
                 if not o.skipped:
                     log.info("Clip %s ready for review (%s): %s", o.ck_clip_id, o.status, o.title)
+                    clip = db.get_clip(self.conn, o.ck_clip_id)
+                    seconds = (clip["end_s"] or 0) - (clip["start_s"] or 0) if clip else None
+                    notify.current().new_clip(streamer=row["streamer"], title=o.title, clip_id=o.ck_clip_id,
+                                              status=o.status, seconds=seconds,
+                                              score=clip["score"] if clip else None)

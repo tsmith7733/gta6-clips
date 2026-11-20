@@ -235,6 +235,16 @@ While the Google project's consent screen is in **Testing**, Google makes you re
 
 **Important: YouTube's API audit.** YouTube has locked uploads from Google Cloud projects that haven't passed its API audit to private, permanently, so a scheduled clip would never go public. If that happens, the first upload shows **locked to private** and scheduling stops. The fix is YouTube's audit (free; Google Cloud console → YouTube API Services → audit and quota extension form), or uploading by hand from Clips Kitty. Start with one clip to find out.
 
+## Phone notifications (Discord)
+
+The program can ping you on Discord when a clip is ready for review (or held as a spoiler), when a stream starts or stops recording, when an upload goes through (with its YouTube link and time), and when something goes wrong (recording failing, a YouTube block, a failed render; the same problem at most every 30 minutes).
+
+1. In Discord, pick a channel in your own server: **Edit Channel → Integrations → Webhooks → New Webhook → Copy Webhook URL**.
+2. Add it to `.env`: `DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...` (treat it like a password).
+3. Test it: `.venv\Scripts\python.exe -m gta6clips notify-test`, then restart `watch` and `review`.
+
+Turn each kind on or off under `notify:` in `config.yaml`. Only titles and short status lines are sent, and nobody is @-mentioned. Approving still happens on the review page on your PC.
+
 ## Streamers
 
 Edit `streamers.yaml`. Each entry needs:

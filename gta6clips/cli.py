@@ -67,6 +67,8 @@ def _parser() -> argparse.ArgumentParser:
     pub.add_argument("--yes", action="store_true", help="upload the plan (without it, only show the plan)")
     pub.add_argument("--clip", type=int, action="append", help="only this clip (repeatable)")
 
+    sub.add_parser("notify-test", help="send a test notification to Discord (DISCORD_WEBHOOK_URL in .env)")
+
     wait = sub.add_parser("wait", help="wait for a queued Clips Kitty job, then title and credit its clips")
     wait.add_argument("job_id", type=int)
 
@@ -115,6 +117,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Config problem: {exc}", file=sys.stderr)
         return 2
     setup_logging(cfg.path("paths.logs"), verbose=args.verbose)
+    from . import notify
+    notifications = notify.setup(cfg)
+    if args.command == "notify-test":
+        if not notifications.on:
+            print("No Discord webhook: put DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/... in .env",
+                  file=sys.stderr)
+            return 2
+        ok = notifications.notifier.send("✅ GTA 6 clips: notifications are working. You'll hear about new clips "
+                                         "here.")
+        print("Sent. Check Discord." if ok else "Discord didn't accept it: check the webhook link in .env.")
+        return 0 if ok else 1
 
     try:
         streamers = load_streamers(cfg.path("paths.streamers"))
