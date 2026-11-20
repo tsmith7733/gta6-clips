@@ -121,6 +121,8 @@ MIGRATIONS = {
         "reasons": "TEXT NOT NULL DEFAULT ''",
         "local_path": "TEXT NOT NULL DEFAULT ''",
         "finder": "TEXT NOT NULL DEFAULT 'gta_plugin'",   # gta_plugin | clipskitty (the fallback)
+        "render_retries": "INTEGER NOT NULL DEFAULT 0",     # times sent again after Clips Kitty's render failed
+        "not_before": "REAL",                               # don't send before this (UTC seconds)
     },
     "clips": {
         "review_from": "TEXT NOT NULL DEFAULT ''",   # pending_review | spoiler_hold before the owner decided
@@ -174,7 +176,8 @@ def add_window(conn: sqlite3.Connection, *, streamer: str, source_url: str, sour
 
 
 def update_window(conn: sqlite3.Connection, window_id: int, **fields) -> None:
-    allowed = {"ck_job_id", "ck_video_id", "state", "error", "start_utc", "end_utc", "local_path", "finder"}
+    allowed = {"ck_job_id", "ck_video_id", "state", "error", "start_utc", "end_utc", "local_path", "finder",
+               "render_retries", "not_before"}
     bad = set(fields) - allowed
     if bad:
         raise ValueError(f"unknown window fields: {bad}")

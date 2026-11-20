@@ -88,6 +88,11 @@ windows:
   max_seconds: 240       # nearby spikes merge into one window up to this length
   max_per_stream: 6      # the best N windows of a VOD (Clips Kitty runs one job at a time)
   max_clips: 2           # clips Clips Kitty may make from one window
+  # When Clips Kitty finds moments but every render fails (usually "CUDA error": the GPU ran out of
+  # memory), the window is sent again under a new file name (so it's transcribed afresh too), after
+  # a pause that lets its AI model leave the GPU. After this many tries it stops and tells you.
+  render_retries: 2
+  render_retry_minutes: 5
   # yt-dlp format for the cut windows: up to 1080p, video + audio merged to mp4.
   # H.264 (avc1) first: Clips Kitty converts AV1 to H.264 before working, which is slow.
   video_format: "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b"

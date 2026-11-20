@@ -440,6 +440,38 @@ def test_no_fallback_when_turned_off(cfg, ck, ck_state, conn, streamers, writer,
     assert len(db.live_windows(conn, ("collected",))) == 1
 
 
+def test_a_failed_render_is_sent_again_after_a_pause(cfg, ck, ck_state, conn, streamers, writer, workdir):
+    ck_state.render_fails = 1
+    clock = Clock()
+    world = World(workdir, clock)
+    world.live[PEANUT] = _check()
+    w = _watcher(cfg, ck, conn, streamers, writer, world, clock)
+    _run(w, clock, 1800)
+    row = db.live_windows(conn, ("planned",))[0]
+    assert row["render_retries"] == 1 and row["not_before"] > clock.t and "_retry1" in row["local_path"]
+    assert len(ck_state.submissions) == 1                    # not resent before the pause is over
+    _run(w, clock, 600)
+    first, second = ck_state.submissions
+    assert second["pipeline"] == first["pipeline"]           # same finder, new file
+    assert second["path"] != first["path"] and second["path"].endswith("_retry1.mp4")
+    rows = db.live_windows(conn, ("collected",))
+    assert len(rows) == 1 and db.clips_by_status(conn, "pending_review")
+
+
+def test_render_retries_stop_and_say_so(cfg, ck, ck_state, conn, streamers, writer, workdir, caplog):
+    cfg.data["windows"]["render_retries"] = 1
+    ck_state.render_fails = 5
+    clock = Clock()
+    world = World(workdir, clock)
+    world.live[PEANUT] = _check()
+    w = _watcher(cfg, ck, conn, streamers, writer, world, clock)
+    with caplog.at_level("ERROR"):
+        _run(w, clock, 3000)
+    assert len(ck_state.submissions) == 2
+    assert len(db.live_windows(conn, ("collected",))) == 1
+    assert any("restart Clips Kitty" in r.getMessage() for r in caplog.records)
+
+
 def test_janitor_deletes_old_pieces(cfg, ck, conn, streamers, writer, workdir):
     clock = Clock()
     world = World(workdir, clock)

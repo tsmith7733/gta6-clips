@@ -184,7 +184,7 @@ After 45 minutes with nothing sent, the bar drops to 3.5, so a quieter stream st
 
 **Funny moments.** The GTA plugin only spots physical events (chases, crashes) in what's said, so it finds nothing in a moment that's funny because of a line he says. When that happens the window goes once more to Clips Kitty's own moment finder, which follows the "funny first" `focus` text in `config.yaml` and runs on Clips Kitty's AI setting (local Ollama here, so free). Turn it off with `fallback_to_clipskitty_finder: false`.
 
-**GPU memory.** Clips Kitty's Ollama model, its Whisper transcription and its rendering share the graphics card. With gemma3:27b loaded (about 17 GB), transcription falls back to the CPU (weak captions) and after a few jobs renders fail with "CUDA error" (0 clips) until Clips Kitty is restarted. A smaller model (Settings → AI, for example gemma3:12b) avoids it.
+**GPU memory.** Clips Kitty's Ollama model, its Whisper transcription and its rendering share the graphics card. With gemma3:27b loaded (about 17 GB), transcription falls back to the CPU (weak captions) and after a few jobs renders fail with "CUDA error" (0 clips) until Clips Kitty is restarted. A smaller model (Settings → AI, for example gemma3:12b) avoids it. When a render does fail, `watch` sends that window again by itself after 5 minutes (up to 2 times, `windows.render_retries`), under a new file name so it's transcribed afresh; if it still fails you get a Discord message to restart Clips Kitty.
 
 **Disk space:** recordings take about 4 GB an hour at 1080p. Pieces older than 2 hours are deleted (`retention_hours`). The windows sent to Clips Kitty are kept in `data\windows`.
 

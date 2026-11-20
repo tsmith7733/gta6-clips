@@ -33,6 +33,7 @@ class FakeState:
     fail_jobs: bool = False
     clips_per_video: int = 2
     plugin_finds_nothing: bool = False   # the GTA plugin's answer on a window that's only funny
+    render_fails: int = 0                # this many jobs find moments but every render fails (CUDA)
     clips: dict[int, dict] = field(default_factory=dict)
     submissions: list[dict] = field(default_factory=list)
     patches: list[tuple[int, dict]] = field(default_factory=list)
@@ -130,6 +131,11 @@ def create_app(state: FakeState) -> FastAPI:
         job["status"] = "done"
         state.processed.add(job["video_id"])
         found = 0 if state.plugin_finds_nothing and job.get("pipeline") else state.clips_per_video
+        if found and state.render_fails > 0:
+            state.render_fails -= 1
+            job["log"] = ("[4/4] Rendering clips...\n      Render failed for 190s-204s: CUDA error: unknown error\n"
+                          "      Done in 2.9 min (0 clips)")
+            return
         for i in range(found):
             state._next_clip += 1
             start = 100.0 + 60 * i
@@ -163,7 +169,8 @@ def create_app(state: FakeState) -> FastAPI:
 
     @app.get("/jobs/{job_id}/log")
     def job_log(job_id: int, tail: int = 300):
-        return {"log": "stage transcribe\nERROR: transcription crashed", "missing": False}
+        job = state.jobs.get(job_id) or {}
+        return {"log": job.get("log", "stage transcribe\nERROR: transcription crashed"), "missing": False}
 
     @app.get("/videos")
     def videos():

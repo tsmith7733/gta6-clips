@@ -8,6 +8,7 @@ Strongest windows go first: Clips Kitty runs one job at a time.
 from __future__ import annotations
 
 import logging
+import shutil
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -86,6 +87,8 @@ class Dispatcher:
         if self.clock() < self._queue_full_until:
             return
         for row in db.live_windows(self.conn, ("planned",)):
+            if row["not_before"] and self.clock() < float(row["not_before"]):
+                continue   # a render retry, waiting for the GPU to free up
             path = Path(row["local_path"]) if row["local_path"] else None
             if path is None or not path.is_file():
                 continue  # still being cut, or the cut failed (then it's marked failed)
@@ -118,6 +121,37 @@ class Dispatcher:
                                  ck_video_id=submitted.video_id)
                 log.info("Window %s (score %.1f) sent to Clips Kitty as job %s%s", row["id"], row["score"] or 0,
                          job_id, " (Clips Kitty's own moment finder)" if row["finder"] == "clipskitty" else "")
+
+    def _render_failed(self, row: sqlite3.Row) -> bool:
+        """Clips Kitty found moments but couldn't render them (its log says so; the job itself is 'done')."""
+        if not row["ck_job_id"]:
+            return False
+        try:
+            text = self.client.job_log(row["ck_job_id"], tail=400)
+        except ClipsKittyError:
+            return False
+        return "Render failed" in text
+
+    def _retry_render(self, row: sqlite3.Row) -> bool:
+        """Send the window again under a new file name, after a pause. False once the tries are used up."""
+        tries = int(row["render_retries"] or 0)
+        limit = int(self.cfg.get("windows.render_retries", 2))
+        src = Path(row["local_path"]) if row["local_path"] else None
+        if tries >= limit or src is None or not src.is_file():
+            log.error("Clips Kitty couldn't render the clips of window %s (%d tries). Its GPU is probably out of "
+                      "memory: restart Clips Kitty, then ask me to resend it.", row["id"], tries + 1)
+            return False
+        # A new name makes it a new video in Clips Kitty, so it's transcribed again too (a failing
+        # GPU often means the transcript was made on the CPU, with weaker captions).
+        stem = src.stem.split("_retry")[0]
+        dest = src.with_name(f"{stem}_retry{tries + 1}{src.suffix}")
+        shutil.copy2(src, dest)
+        wait_s = float(self.cfg.get("windows.render_retry_minutes", 5)) * 60
+        db.update_window(self.conn, row["id"], state="planned", ck_job_id=None, local_path=str(dest),
+                         render_retries=tries + 1, not_before=self.clock() + wait_s)
+        log.info("Clips Kitty's render failed for window %s; sending it again in %.0f min (try %d of %d).",
+                 row["id"], wait_s / 60, tries + 1, limit)
+        return True
 
     def _retry_with_clipskitty_finder(self, row: sqlite3.Row) -> bool:
         """The GTA plugin found nothing: queue the window again for Clips Kitty's own finder (once)."""
@@ -164,8 +198,12 @@ class Dispatcher:
             outcomes = postprocess_video(self.client, self.conn, self.cfg, streamer, video_id, self.writer,
                                          window_id=row["id"], source_title=row["source_title"],
                                          spoilers=self.spoilers, chat_for=chat_for)
-            if not outcomes and self._retry_with_clipskitty_finder(row):
-                continue
+            if not outcomes:
+                if self._render_failed(row):
+                    if self._retry_render(row):
+                        continue
+                elif self._retry_with_clipskitty_finder(row):
+                    continue
             db.update_window(self.conn, row["id"], state="collected")
             self.collected.append(row["id"])
             for o in outcomes:
