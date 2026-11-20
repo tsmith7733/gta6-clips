@@ -103,11 +103,24 @@ def brief_prompt(brief: ClipBrief) -> str:
 
 
 class ClipsKittyTitles:
-    """Free TitleWriter: keeps the title Clips Kitty wrote. No API calls, no hook."""
+    """Free TitleWriter: keeps the title Clips Kitty wrote. No API calls, no hook.
+
+    With a `suffix` such as " | {streamer} GTA 6", the first option names the streamer, the way
+    the big streamer-clip channels title theirs (viewers search for the streamer); the plain
+    title stays as the second option.
+    """
+
+    def __init__(self, suffix: str = ""):
+        self.suffix = suffix
 
     def write(self, brief: ClipBrief) -> TitleSuggestions:
         title = _clean(brief.clipskitty_title, MAX_TITLE_CHARS) or f"{brief.streamer} GTA 6 moment"
-        return TitleSuggestions(titles=[title], hook="")
+        titles = [title]
+        if self.suffix:
+            branded = title + self.suffix.format(streamer=brief.streamer)
+            if len(branded) <= MAX_TITLE_CHARS and brief.streamer.lower() not in title.lower():
+                titles = [branded, title]
+        return TitleSuggestions(titles=titles, hook="")
 
 
 class ClaudeTitleWriter:

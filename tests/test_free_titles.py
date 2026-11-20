@@ -37,3 +37,19 @@ def test_free_mode_still_credits_and_tags(ck, ck_state, conn, cfg, streamers):
     for _, body in ck_state.patches:
         assert has_credit(body["description"], streamers[0])
         assert "#TheBurntPeanut" in body["hashtags"]
+
+
+def test_streamer_named_title_comes_first_when_it_fits():
+    writer = ClipsKittyTitles(suffix=" | {streamer} GTA 6")
+    brief = ClipBrief("The Burnt Peanut", "", "Soccer Practice Emergency?!", "", "", 30)
+    assert writer.write(brief).titles == ["Soccer Practice Emergency?! | The Burnt Peanut GTA 6",
+                                          "Soccer Practice Emergency?!"]
+    named = ClipBrief("The Burnt Peanut", "", "The Burnt Peanut robs a store", "", "", 30)
+    assert writer.write(named).titles == ["The Burnt Peanut robs a store"]           # already named
+    long = ClipBrief("The Burnt Peanut", "", "x" * 90, "", "", 30)
+    assert writer.write(long).titles == ["x" * 90]                                    # over 100 chars
+
+
+def test_config_turns_on_the_streamer_suffix(cfg, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert make_title_writer(cfg).suffix == " | {streamer} GTA 6"

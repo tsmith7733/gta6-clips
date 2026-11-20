@@ -35,25 +35,31 @@ clipskitty:
     captions: true
     max_clips: 8           # per video in Phase 1 (a whole VOD); live windows will use 1-2
     focus: >-
-      Funny and viral GTA 6 moments from the streamer: his out-of-pocket
-      one-liners and roasts, trolling NPCs, cops or friends, absurd commentary,
-      rage and crash-outs, dumb plans going wrong, chaotic physics, escalating
-      police chases, glitches, insane stunts or crashes. Prefer a joke with its
-      punchline and the laugh over plain action. Skip story cutscenes and
-      dialogue between game characters. Start on the setup within 2 seconds,
-      keep it 15-35 seconds, end right after the payoff and his reaction.
+      Funny or wild GTA 6 moments built around the streamer: his out-of-pocket
+      one-liners and roasts, trolling or fighting NPCs, NPC road rage, run-ins
+      with cops, his reactions to the radio, TV, gore or a bug, dumb plans going
+      wrong, crashes, chaotic physics, insane stunts. Prefer a joke with its
+      punchline and his reaction over plain action. Skip story cutscenes and
+      game-character dialogue. Start on the setup within 2 seconds, keep it 20-60
+      seconds, end right after the payoff and his reaction.
   # How often to ask Clips Kitty whether a job is finished, and for how long.
   poll_seconds: 30
   job_timeout_hours: 6
 
 clips:
   # Our target length. Clips outside it are kept but flagged for review.
+  # Launch-week GTA 6 streamer clips that did best on YouTube ran 40-105 s (median ~50 s): long
+  # enough for the setup, the payoff and the reaction.
   min_seconds: 15
-  max_seconds: 45
+  max_seconds: 60
 
 metadata:
   # Every clip carries these, plus a hashtag of the streamer's name.
   hashtags: ["#GTA6", "#GTAVI", "#Shorts"]
+  # Added to Clips Kitty's title as the first title option (the plain one stays as the second).
+  # The big streamer-clip channels name the streamer in every title ("... | xQc GTA VI"),
+  # because viewers search for the streamer. "" turns it off.
+  title_suffix: " | {streamer} GTA 6"
 
 # Phase 2: which moments of a stream are worth sending (python -m gta6clips scan <url>).
 # Each signal is compared with the same stream's own recent baseline, so big and

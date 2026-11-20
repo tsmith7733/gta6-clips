@@ -83,7 +83,7 @@ def claude_titles_on(cfg) -> bool:
 def make_title_writer(cfg) -> TitleWriter | None:
     """Clips Kitty's own titles unless llm.enabled is true. None means: on, but no API key."""
     if not claude_titles_on(cfg):
-        return ClipsKittyTitles()
+        return ClipsKittyTitles(suffix=str(cfg.get("metadata.title_suffix", "") or ""))
     if not env("ANTHROPIC_API_KEY"):
         return None
     return ClaudeTitleWriter(model=cfg.get("llm.model", "claude-opus-5-5"),
