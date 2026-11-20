@@ -49,6 +49,23 @@ CREATE TABLE IF NOT EXISTS clips (
 );
 CREATE INDEX IF NOT EXISTS clips_status ON clips(status);
 
+-- Phase 5: one row per upload we asked Clips Kitty for.
+CREATE TABLE IF NOT EXISTS publish_log (
+    id              INTEGER PRIMARY KEY,
+    ck_clip_id      INTEGER NOT NULL,
+    publish_job_id  INTEGER,
+    title           TEXT NOT NULL,
+    publish_at      TEXT NOT NULL,              -- RFC 3339 with offset, as sent
+    state           TEXT NOT NULL,              -- submitted | uploaded | locked_private | rejected | failed | interrupted
+    youtube_id      TEXT NOT NULL DEFAULT '',
+    privacy         TEXT NOT NULL DEFAULT '',   -- what we asked for (always private)
+    actual_privacy  TEXT NOT NULL DEFAULT '',   -- what YouTube set
+    error           TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS publish_log_clip ON publish_log(ck_clip_id);
+
 -- Phase 2: one row per recorded stream (a VOD now, a live recording later).
 CREATE TABLE IF NOT EXISTS streams (
     id           INTEGER PRIMARY KEY,
@@ -263,6 +280,64 @@ def follow_replaced_clip(conn: sqlite3.Connection, old_id: int, new_id: int, not
     notes = json.loads(row["notes"] or "[]") + [f"{_now()}: {note}"]
     conn.execute("UPDATE clips SET ck_clip_id = ?, notes = ?, updated_at = ? WHERE ck_clip_id = ?",
                  (int(new_id), json.dumps(notes), _now(), int(old_id)))
+    conn.execute("UPDATE publish_log SET ck_clip_id = ? WHERE ck_clip_id = ?", (int(new_id), int(old_id)))
+    conn.commit()
+
+
+# -- Phase 5: publishing ------------------------------------------------------------------
+
+LIVE_PUBLISH_STATES = ("submitted", "uploaded", "locked_private")   # occupy a slot / block a repeat
+
+
+def add_publish(conn: sqlite3.Connection, *, ck_clip_id: int, publish_job_id: int | None, title: str,
+                publish_at: str) -> int:
+    cur = conn.execute(
+        "INSERT INTO publish_log (ck_clip_id, publish_job_id, title, publish_at, state, privacy, created_at, "
+        "updated_at) VALUES (?, ?, ?, ?, 'submitted', 'private', ?, ?)",
+        (int(ck_clip_id), publish_job_id, title, publish_at, _now(), _now()))
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def update_publish(conn: sqlite3.Connection, log_id: int, **fields) -> None:
+    allowed = {"state", "youtube_id", "actual_privacy", "error", "ck_clip_id"}
+    if set(fields) - allowed:
+        raise ValueError(f"unknown publish fields: {set(fields) - allowed}")
+    fields["updated_at"] = _now()
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    conn.execute(f"UPDATE publish_log SET {sets} WHERE id = ?", (*fields.values(), log_id))
+    conn.commit()
+
+
+def publishes(conn: sqlite3.Connection, states: tuple[str, ...] | None = None) -> list[sqlite3.Row]:
+    if states:
+        marks = ",".join("?" * len(states))
+        return conn.execute(f"SELECT * FROM publish_log WHERE state IN ({marks}) ORDER BY publish_at",
+                            states).fetchall()
+    return conn.execute("SELECT * FROM publish_log ORDER BY publish_at").fetchall()
+
+
+def latest_publish(conn: sqlite3.Connection, ck_clip_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM publish_log WHERE ck_clip_id = ? ORDER BY id DESC LIMIT 1",
+                        (int(ck_clip_id),)).fetchone()
+
+
+def mark_published(conn: sqlite3.Connection, ck_clip_id: int, note: str) -> None:
+    """The only way to `published`: Clips Kitty reported the upload on YouTube."""
+    row = get_clip(conn, ck_clip_id)
+    notes = json.loads(row["notes"] or "[]") + [f"{_now()}: {note}"]
+    conn.execute("UPDATE clips SET status = 'published', notes = ?, updated_at = ? WHERE ck_clip_id = ? "
+                 "AND status = 'approved'", (json.dumps(notes), _now(), int(ck_clip_id)))
+    conn.commit()
+
+
+def add_clip_note(conn: sqlite3.Connection, ck_clip_id: int, note: str) -> None:
+    row = get_clip(conn, ck_clip_id)
+    if row is None:
+        return
+    notes = json.loads(row["notes"] or "[]") + [f"{_now()}: {note}"]
+    conn.execute("UPDATE clips SET notes = ?, updated_at = ? WHERE ck_clip_id = ?",
+                 (json.dumps(notes), _now(), int(ck_clip_id)))
     conn.commit()
 
 

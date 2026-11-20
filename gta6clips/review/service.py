@@ -180,8 +180,14 @@ class ReviewService:
         db.set_clip_status(self.conn, clip_id, "approved", note=what, title=title)
         return self.card(clip_id)
 
+    def _not_uploading(self, clip_id: int) -> None:
+        last = db.latest_publish(self.conn, clip_id)
+        if last is not None and last["state"] in db.LIVE_PUBLISH_STATES:
+            raise ReviewError("This clip has been sent to YouTube; change or delete it in YouTube Studio.")
+
     def reject(self, clip_id: int) -> Card:
         card = self.card(clip_id)
+        self._not_uploading(clip_id)
         if card.status not in ("pending_review", "spoiler_hold", "approved"):
             raise ReviewError(f"This clip is {card.status}; it can't be rejected.")
         db.set_clip_status(self.conn, clip_id, "rejected", note="rejected")
@@ -190,6 +196,7 @@ class ReviewService:
     def undo(self, clip_id: int) -> Card:
         """Approved or rejected → back to where it was reviewed from (a spoiler goes back to Spoilers)."""
         card = self.card(clip_id)
+        self._not_uploading(clip_id)
         if card.status not in ("approved", "rejected"):
             raise ReviewError(f"This clip is {card.status}; there's no decision to undo.")
         row = db.get_clip(self.conn, clip_id)

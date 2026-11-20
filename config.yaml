@@ -115,6 +115,28 @@ live:
 review:
   port: 8770                 # not 8765, which is Clips Kitty's
 
+# Phase 5: uploads to YouTube through Clips Kitty, from the review page's Approved tab
+# (or python -m gta6clips publish). Every upload is scheduled: it goes up private and YouTube
+# publishes it at the slot's time. Nothing is ever uploaded public, and only approved clips go.
+publish:
+  timezone: America/Chicago
+  # Daily slots, local time. Gaming Shorts do best mid-afternoon (after school and work) and in the
+  # evening, weekends strongest. Starting points: move them to what YouTube Studio's "When your
+  # viewers are on YouTube" shows once the channel has views. One clip per slot.
+  slots:
+    weekdays: ["15:00", "20:00"]
+    weekends: ["12:00", "15:00", "20:00"]
+  min_lead_minutes: 20         # a slot sooner than this is skipped (YouTube needs at least 15)
+  category_id: "20"            # Gaming
+  made_for_kids: false
+  notify_subscribers: true
+  contains_synthetic_media: false
+  quota_warn_at: 80            # warn when this many of the day's uploads are used (YouTube allows 100)
+  # YouTube permanently locks uploads from a Google Cloud project that hasn't passed its API audit
+  # to private: scheduled clips would then never go public. After the first such upload, scheduling
+  # stops. Set true only if you're fine with private-only uploads (making them public by hand fails too).
+  accept_locked_private: false
+
 # Clips that may show major story missions or the ending are held (status spoiler_hold)
 # and kept out of the main review queue. Free keyword check, no API key needed.
 spoilers:

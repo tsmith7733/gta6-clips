@@ -11,7 +11,7 @@ without your approval.
 | 2 | Chat and audio spike scoring, spoiler filter | ✅ done, tested on a 19 h GTA 6 stream |
 | 3 | Watch live streams and record several at once | ✅ done (YouTube), tested on a live GTA 6 stream |
 | 4 | Review page | ✅ built |
-| 5 | Publish approved clips (private or scheduled) | |
+| 5 | Publish approved clips, scheduled at peak times | ✅ built, waiting for YouTube to be connected in Clips Kitty |
 
 ## The rules it enforces
 
@@ -202,9 +202,38 @@ Opens a page in your browser at `http://127.0.0.1:8770` (change the port with `r
 - **Spoilers**: clips held as possible spoilers. To approve one, tick **Not a spoiler** first. Undoing a decision on a spoiler puts it back here, never in the main list.
 - **Approved** and **Rejected**: change a title, or undo the decision.
 
-Approving writes the chosen title to Clips Kitty and checks that the clip's description there still has the streamer's credit; it refuses if the credit was removed. Nothing is published from this page: approved clips wait for the publish step (Phase 5).
+Approving writes the chosen title to Clips Kitty and checks that the clip's description there still has the streamer's credit; it refuses if the credit was removed. Approved clips are scheduled on YouTube from the Approved tab (Phase 5, below).
 
 Fine edits (framing, captions, trimming) happen in the Clips Kitty studio. When you re-render a clip there, Clips Kitty gives it a new number; the page notices and follows it, keeping your decision. The list refreshes itself every 30 seconds while `watch` adds clips.
+
+## Publish on a schedule (Phase 5)
+
+Approved clips go to YouTube through Clips Kitty, each **scheduled for a time slot**: it uploads right away as **private**, and YouTube makes it public at the slot's time. Nothing is ever uploaded public, and only approved clips are uploaded.
+
+On the review page's **Approved** tab, press **Schedule approved clips**. You see the plan first (each clip, its title and its slot) and nothing uploads until you press **Upload**. Best-scoring clips get the earliest slots, one clip per slot. Or from PowerShell:
+
+```powershell
+.venv\Scripts\python.exe -m gta6clips publish          # show the plan
+.venv\Scripts\python.exe -m gta6clips publish --yes    # upload it
+```
+
+**Slots** are in `config.yaml` under `publish:` (US Central by default): weekdays 3 PM and 8 PM, weekends noon, 3 PM and 8 PM. Gaming Shorts do best mid-afternoon (after school and work) and in the evening, weekends strongest. These are starting points: once the channel has views, YouTube Studio → Analytics → Audience → "When your viewers are on YouTube" shows the real peaks, so move the slots there.
+
+Before each upload it re-checks that the streamer is permitted, the clip is approved and its description still has the credit line. Afterwards it compares what YouTube did with what was asked; the clip moves to **Published** with its link. It warns at 80 of YouTube's 100 uploads a day and stops at the limit.
+
+### Connect YouTube in Clips Kitty (once)
+
+Clips Kitty uploads with your own Google Cloud project, so nothing goes through anyone else's server.
+
+1. Go to <https://console.cloud.google.com>, sign in with the Google account that owns your YouTube channel, and create a project (any name).
+2. **APIs & Services → Library**: find **YouTube Data API v3** and press **Enable**.
+3. **Google Auth Platform** (OAuth consent screen): choose **External**, give it a name and your email. Under **Audience**, add your own Google account as a **test user**.
+4. **Clients → Create client → Desktop app**. Keep the client ID and secret (or download the JSON).
+5. In Clips Kitty: **Settings → Publish to YouTube**, turn it on, add the client, press **Connect** and sign in with your channel's account. Then set its **default privacy to Private** (a safety net; this project always sends private anyway).
+
+While the Google project's consent screen is in **Testing**, Google makes you reconnect about once a week; pressing **Publish app** on that screen stops that (Google shows an "unverified app" warning, which is fine for your own app).
+
+**Important: YouTube's API audit.** YouTube has locked uploads from Google Cloud projects that haven't passed its API audit to private, permanently, so a scheduled clip would never go public. If that happens, the first upload shows **locked to private** and scheduling stops. The fix is YouTube's audit (free; Google Cloud console → YouTube API Services → audit and quota extension form), or uploading by hand from Clips Kitty. Start with one clip to find out.
 
 ## Streamers
 

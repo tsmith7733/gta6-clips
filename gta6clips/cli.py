@@ -63,6 +63,10 @@ def _parser() -> argparse.ArgumentParser:
     review.add_argument("--port", type=int, help="override review.port in config.yaml")
     review.add_argument("--no-browser", action="store_true", help="don't open the page in the browser")
 
+    pub = sub.add_parser("publish", help="schedule approved clips on YouTube through Clips Kitty (Phase 5)")
+    pub.add_argument("--yes", action="store_true", help="upload the plan (without it, only show the plan)")
+    pub.add_argument("--clip", type=int, action="append", help="only this clip (repeatable)")
+
     wait = sub.add_parser("wait", help="wait for a queued Clips Kitty job, then title and credit its clips")
     wait.add_argument("job_id", type=int)
 
@@ -121,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
             return _check(cfg, client, streamers)
         if args.command == "clips":
             return _list_clips(conn, args.status)
+        if args.command == "publish":
+            return _publish(cfg, client, conn, streamers, args)
         if args.command == "review":
             conn.close()
             return _review(cfg, client, streamers, args)
@@ -237,6 +243,41 @@ def _list_clips(conn, status: str) -> int:
     return 0
 
 
+def _publish(cfg, client, conn, streamers, args) -> int:
+    from .publish.service import PublishService
+
+    pub = PublishService(conn=conn, client=client, streamers=streamers, cfg=cfg)
+    for change in pub.refresh(force=True):
+        print(f"  clip {change['clip_id']}: upload {change['state']}")
+    plan = pub.plan(args.clip)
+    st = plan.status
+    if st.enabled:
+        print(f"YouTube: {st.channel or 'connected'}, {st.used}/{st.limit} uploads used today")
+    for w in st.warnings:
+        print(f"  warning: {w}")
+    for p in st.problems:
+        print(f"  problem: {p}")
+    if not st.ok:
+        return 1
+    for s in plan.skipped:
+        print(f"  skipped clip {s['clip_id']}: {s['reason']}")
+    if not plan.items:
+        print("No approved clips to schedule.")
+        return 0
+    print("Plan (each uploads private now; YouTube publishes it at its slot):")
+    for i in plan.items:
+        print(f"  {i.when}  [{i.clip_id}] {i.title}")
+    if not args.yes:
+        print("\nNothing uploaded. Run again with --yes to upload this plan.")
+        return 0
+    result = pub.execute([i.as_dict() for i in plan.items])
+    for s in result["started"]:
+        print(f"  uploading clip {s['clip_id']}, scheduled for {s['when']}")
+    for s in result["skipped"]:
+        print(f"  skipped clip {s['clip_id']}: {s['reason']}")
+    return 0
+
+
 def _review(cfg, client, streamers, args) -> int:
     import threading
     import webbrowser
@@ -248,13 +289,16 @@ def _review(cfg, client, streamers, args) -> int:
     if port == 8765:
         print("Port 8765 is Clips Kitty's. Pick another review.port.", file=sys.stderr)
         return 2
-    service = ReviewService(conn=db.connect(cfg.path("paths.database"), threads=True), client=client,
-                            streamers=streamers)
+    from .publish.service import PublishService
+
+    shared = db.connect(cfg.path("paths.database"), threads=True)
+    service = ReviewService(conn=shared, client=client, streamers=streamers)
+    publisher = PublishService(conn=shared, client=client, streamers=streamers, cfg=cfg)
     url = f"http://127.0.0.1:{port}/"
     print(f"Review page: {url}  (Ctrl+C stops it; nothing is published from it)")
     if not args.no_browser:
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()
-    serve(service, client, port=port)
+    serve(service, client, port=port, publisher=publisher)
     return 0
 
 

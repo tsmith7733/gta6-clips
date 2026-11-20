@@ -159,3 +159,19 @@ class ClipsKittyClient:
 
     def media_url(self, clip_id: int) -> str:
         return f"{self.base_url}/media/{int(clip_id)}"
+
+    # -- publishing (supported: GET /youtube/status, POST and GET /clips/{id}/publish) --
+    def youtube_status(self) -> dict:
+        """{"enabled": false} while YouTube publishing is off in Clips Kitty's Settings."""
+        return self._get("/youtube/status")
+
+    def publish_clip(self, clip_id: int, body: dict) -> dict:
+        """POST /clips/{id}/publish. Callers must send privacy "private" and/or publish_at: never
+        rely on Clips Kitty's publishing defaults, which can be public."""
+        if body.get("privacy") != "private":
+            raise ValueError("refusing to publish without privacy: private")
+        return self._request("POST", f"/clips/{int(clip_id)}/publish", json=body).json()
+
+    def publish_state(self, clip_id: int) -> dict:
+        """{"upload": {... "privacy", "actual_privacy", "state"} | null, "job": {...} | null}"""
+        return self._get(f"/clips/{int(clip_id)}/publish")

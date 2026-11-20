@@ -16,6 +16,7 @@ from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from ..clipskitty import ClipsKittyClient, ClipsKittyError
+from ..publish.service import PublishService
 from .service import ReviewError, ReviewService
 
 log = logging.getLogger(__name__)
@@ -23,7 +24,7 @@ log = logging.getLogger(__name__)
 LOOPBACK = ("127.0.0.1", "localhost")
 
 
-def create_app(service: ReviewService, client: ClipsKittyClient) -> FastAPI:
+def create_app(service: ReviewService, client: ClipsKittyClient, publisher: PublishService | None = None) -> FastAPI:
     app = FastAPI(title="GTA 6 clips review", docs_url=None, redoc_url=None, openapi_url=None)
     lock = threading.Lock()          # one sqlite connection, shared by the worker threads
     page = resources.files(__package__).joinpath("page.html").read_text(encoding="utf-8")
@@ -58,9 +59,39 @@ def create_app(service: ReviewService, client: ClipsKittyClient) -> FastAPI:
     def clips(status: str = "pending_review"):
         def go():
             moved = service.reconcile()
-            return {"counts": service.counts(), "clips": [c.as_dict() for c in service.cards(status)],
-                    "followed": moved}
+            if publisher is not None:
+                publisher.refresh()
+            cards = []
+            for c in service.cards(status):
+                d = c.as_dict()
+                d["upload"] = publisher.upload_for(c.id) if publisher is not None else None
+                cards.append(d)
+            return {"counts": service.counts(), "clips": cards, "followed": moved}
         return run(go)
+
+    def need_publisher() -> PublishService:
+        if publisher is None:
+            raise HTTPException(404, "Publishing isn't set up on this page.")
+        return publisher
+
+    @app.get("/api/publish/status")
+    def publish_status():
+        pub = need_publisher()
+        return run(lambda: pub.status().as_dict())
+
+    @app.post("/api/publish/plan")
+    def publish_plan(body: dict = Body(default={})):
+        pub = need_publisher()
+        ids = body.get("clip_ids")
+        return run(lambda: pub.plan([int(i) for i in ids] if isinstance(ids, list) else None).as_dict())
+
+    @app.post("/api/publish/execute")
+    def publish_execute(body: dict = Body(...)):
+        pub = need_publisher()
+        items = body.get("items")
+        if not isinstance(items, list) or not items:
+            raise HTTPException(400, "Nothing to upload.")
+        return run(lambda: pub.execute(items))
 
     @app.get("/api/clips/{clip_id}/captions")
     def captions(clip_id: int):
@@ -94,7 +125,8 @@ def create_app(service: ReviewService, client: ClipsKittyClient) -> FastAPI:
     return app
 
 
-def serve(service: ReviewService, client: ClipsKittyClient, *, port: int) -> None:
+def serve(service: ReviewService, client: ClipsKittyClient, *, port: int,
+          publisher: PublishService | None = None) -> None:
     import uvicorn
 
-    uvicorn.run(create_app(service, client), host="127.0.0.1", port=port, log_level="warning")
+    uvicorn.run(create_app(service, client, publisher), host="127.0.0.1", port=port, log_level="warning")

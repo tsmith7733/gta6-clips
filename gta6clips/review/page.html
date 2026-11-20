@@ -61,6 +61,18 @@
   .actions button.danger { color: var(--danger); }
   .actions button:disabled { opacity: .5; cursor: default; }
   .confirm { font-size: 13px; display: flex; gap: 6px; align-items: center; }
+  #publish { grid-column: 1 / -1; background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+             padding: 14px 16px; }
+  #publish h2 { margin: 0 0 6px; font-size: 15px; }
+  #publish p { margin: 4px 0; font-size: 14px; }
+  #publish .problem { color: var(--danger); }
+  #publish .warning { color: var(--warn-ink); background: var(--warn-bg); padding: 4px 8px; border-radius: 6px; }
+  #publish table { border-collapse: collapse; margin: 8px 0; font-size: 14px; width: 100%; }
+  #publish td { padding: 4px 10px 4px 0; border-top: 1px solid var(--line); vertical-align: top; }
+  #publish td.when { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .upload { margin-top: 10px; font-size: 14px; }
+  .upload a { color: var(--accent); }
+  .upload .bad { color: var(--danger); font-weight: 600; }
   #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--ink); color: var(--bg);
            padding: 10px 16px; border-radius: 8px; font-size: 14px; max-width: min(640px, 90vw); display: none; z-index: 5; }
   #toast.err { background: var(--danger); color: #fff; }
@@ -73,7 +85,7 @@
 </head>
 <body>
 <header>
-  <h1>Clip review <small>Nothing is published from here. Approved clips wait for the publish step.</small></h1>
+  <h1>Clip review <small>Approved clips are scheduled on YouTube from the Approved tab, private until their time slot.</small></h1>
   <nav id="tabs"></nav>
 </header>
 <main id="list"></main>
@@ -125,10 +137,20 @@ function card(c) {
       <div class="count"></div>
     </fieldset>`;
   const notes = c.notes.length ? `<div class="notes">${c.notes.map(n => `<div>${esc(n)}</div>`).join("")}</div>` : "";
+  const u = c.upload;
+  const upload = !u ? "" : `<div class="upload">${{
+      submitted: `Uploading to YouTube, scheduled for <b>${esc(u.when)}</b>…`,
+      uploaded: `On YouTube, private until <b>${esc(u.when)}</b>, then public.`,
+      locked_private: `<span class="bad">YouTube locked this upload to private</span>; it won't go public at ${esc(u.when)}.`,
+      rejected: `<span class="bad">YouTube rejected the upload.</span> ${esc(u.error)}`,
+      failed: `<span class="bad">The upload failed.</span> ${esc(u.error)}`,
+      interrupted: `<span class="bad">The upload was interrupted.</span> Check your channel before trying again; it may be there.`,
+    }[u.state] || esc(u.state)}${u.url ? ` <a href="${esc(u.url)}" target="_blank" rel="noopener">Open on YouTube</a>` : ""}</div>`;
   const buttons = open ? `
       ${c.status === "spoiler_hold" ? `<label class="confirm"><input type="checkbox" class="notspoiler"> Not a spoiler</label>` : ""}
       <button class="primary" data-do="approve">Approve</button>
       <button class="danger" data-do="reject">Reject</button>`
+    : c.status === "approved" && u && ["submitted", "uploaded", "locked_private"].includes(u.state) ? ""
     : c.status === "approved" ? `
       <button data-do="title">Save title</button>
       <button data-do="undo">Undo approval</button>
@@ -141,6 +163,7 @@ function card(c) {
         <span>score ${c.score ?? "–"}</span></div>
       <div class="src" title="${esc(c.source_title)}">${esc(c.source_title)}</div>
       ${titleBlock}
+      ${upload}
       ${notes}
       <details class="capdetails"><summary>Captions</summary><div class="caps">Loading…</div></details>
       <details><summary>Description and hashtags</summary><pre>${esc(c.description)}\n\n${esc(c.hashtags.join(" "))}</pre></details>
@@ -203,15 +226,63 @@ async function load(onlyIfChanged = false) {
   try {
     const data = await api(`/api/clips?status=${tab}`);
     drawTabs(data.counts);
-    const ids = tab + ":" + data.clips.map(c => `${c.id}/${c.status}`).join(",");
+    const ids = tab + ":" + data.clips.map(c => `${c.id}/${c.status}/${c.upload?.state || ""}`).join(",");
     if (onlyIfChanged && ids === shown) return;   // keep players and typed titles as they are
     shown = ids;
     if (data.followed?.length) toast(`Followed ${data.followed.length} clip(s) Clips Kitty rendered again.`);
     const list = $("#list");
-    list.innerHTML = data.clips.length ? data.clips.map(card).join("")
-      : `<p class="empty">Nothing here.</p>`;
+    const panel = tab === "approved" ? `<section id="publish"><h2>Publish to YouTube</h2><p>Checking…</p></section>` : "";
+    list.innerHTML = panel + (data.clips.length ? data.clips.map(card).join("")
+      : `<p class="empty">Nothing here.</p>`);
+    if (tab === "approved") drawPublish();
     list.querySelectorAll(".card").forEach(wire);
   } catch (err) { toast(`Couldn't load clips: ${err.message}`, true); }
+}
+
+async function drawPublish() {
+  const box = $("#publish");
+  if (!box) return;
+  let st;
+  try { st = await api("/api/publish/status"); }
+  catch (err) { box.innerHTML = `<h2>Publish to YouTube</h2><p class="problem">${esc(err.message)}</p>`; return; }
+  const lines = [
+    st.enabled ? `<p>Channel: <b>${esc(st.channel || "connected")}</b> · ${st.used}/${st.limit} uploads used today</p>` : "",
+    ...st.problems.map(p => `<p class="problem">${esc(p)}</p>`),
+    ...st.warnings.map(w => `<p class="warning">${esc(w)}</p>`),
+  ];
+  box.innerHTML = `<h2>Publish to YouTube</h2>${lines.join("")}
+    <p>Each clip uploads now as <b>private</b> and YouTube makes it public at its time slot.</p>
+    <div class="actions"><button class="primary" id="plan" ${st.ok ? "" : "disabled"}>Schedule approved clips</button></div>
+    <div id="planout"></div>`;
+  $("#plan")?.addEventListener("click", makePlan);
+}
+
+async function makePlan() {
+  const out = $("#planout");
+  $("#plan").disabled = true;
+  try {
+    const plan = await api("/api/publish/plan", {});
+    const skipped = plan.skipped.map(s => `<p class="warning">Clip ${s.clip_id} skipped: ${esc(s.reason)}</p>`).join("");
+    if (!plan.items.length) {
+      out.innerHTML = skipped + `<p>No approved clips are ready to schedule.</p>`;
+      $("#plan").disabled = false;
+      return;
+    }
+    out.innerHTML = `<table>${plan.items.map(i => `<tr><td class="when">${esc(i.when)}</td>
+        <td>clip ${i.clip_id}</td><td>${esc(i.title)}</td></tr>`).join("")}</table>${skipped}
+      <div class="actions"><button class="primary" id="go">Upload ${plan.items.length} clip(s) on this schedule</button>
+        <button id="cancel">Cancel</button></div>`;
+    $("#cancel").addEventListener("click", () => { out.innerHTML = ""; $("#plan").disabled = false; });
+    $("#go").addEventListener("click", async () => {
+      $("#go").disabled = true; $("#cancel").disabled = true;
+      try {
+        const r = await api("/api/publish/execute", {items: plan.items});
+        const msg = `${r.started.length} clip(s) uploading` + (r.skipped.length ? `, ${r.skipped.length} skipped: ${r.skipped.map(s => s.reason).join("; ")}` : "");
+        toast(msg, r.skipped.length > 0 && !r.started.length);
+        await load();
+      } catch (err) { toast(err.message, true); $("#go").disabled = false; $("#cancel").disabled = false; }
+    });
+  } catch (err) { toast(err.message, true); $("#plan").disabled = false; }
 }
 
 $("#tabs").addEventListener("click", e => {

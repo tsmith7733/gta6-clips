@@ -36,6 +36,15 @@ class FakeState:
     clips: dict[int, dict] = field(default_factory=dict)
     submissions: list[dict] = field(default_factory=list)
     patches: list[tuple[int, dict]] = field(default_factory=list)
+    youtube_enabled: bool = True
+    youtube_connected: bool = True
+    uploads_used: int = 0
+    uploads_limit: int = 100
+    lock_uploads: bool = False            # YouTube locks uploads from an unaudited project to private
+    publish_fails: bool = False
+    publishes: list[tuple[int, dict]] = field(default_factory=list)
+    uploads: dict[int, dict] = field(default_factory=dict)   # clip id -> upload
+    _next_publish: int = 1
     _next_job: int = 100
     _next_clip: int = 800
 
@@ -186,6 +195,52 @@ def create_app(state: FakeState) -> FastAPI:
         end = min(int(m.group(2)) if m.group(2) else len(data) - 1, len(data) - 1)
         return Response(data[start:end + 1], status_code=206, media_type="video/mp4",
                         headers={"Accept-Ranges": "bytes", "Content-Range": f"bytes {start}-{end}/{len(data)}"})
+
+    @app.get("/youtube/status")
+    def youtube_status():
+        if not state.youtube_enabled:
+            return {"enabled": False}
+        return {"enabled": True, "backend": "windows-dpapi", "has_client": True,
+                "connected": state.youtube_connected,
+                "channel": {"id": "UCtest", "title": "GTA Clips", "handle": "@gtaclips"},
+                "settings": {"enabled": True, "privacy": state.privacy, "category_id": "22",
+                             "made_for_kids": False, "notify_subscribers": True, "region": "US"},
+                "quota": {"uploads_used": state.uploads_used, "uploads_limit": state.uploads_limit,
+                          "remaining": state.uploads_limit - state.uploads_used, "resets_at": ""}}
+
+    @app.post("/clips/{clip_id}/publish")
+    async def publish(clip_id: int, request: Request):
+        if not state.youtube_enabled:
+            raise HTTPException(404, "Not Found")
+        clip = state.clips.get(clip_id)
+        if clip is None:
+            raise HTTPException(404, "no such clip")
+        body = await request.json()
+        if not body.get("title"):
+            raise HTTPException(422, "title required")
+        if body.get("publish_at") and not re.search(r"(Z|[+-]\d\d:\d\d)$", body["publish_at"]):
+            raise HTTPException(400, "publish_at needs an offset")
+        state.publishes.append((clip_id, body))
+        job = state._next_publish
+        state._next_publish += 1
+        state.uploads_used += 1
+        privacy = "private" if body.get("publish_at") else body.get("privacy", state.privacy)
+        if state.publish_fails:
+            state.uploads[clip_id] = {"clip_id": clip_id, "youtube_id": "", "privacy": privacy,
+                                      "actual_privacy": "", "state": "failed", "publish_at": "",
+                                      "error": "The upload failed"}
+        else:
+            state.uploads[clip_id] = {"clip_id": clip_id, "youtube_id": f"yt{clip_id:08d}"[:11],
+                                      "privacy": privacy, "actual_privacy": "private",
+                                      "state": "locked_private" if state.lock_uploads else "uploaded",
+                                      "publish_at": body.get("publish_at", ""), "channel_title": "GTA Clips"}
+        return {"publish_job_id": job, "render_job_id": None}
+
+    @app.get("/clips/{clip_id}/publish")
+    def publish_state(clip_id: int):
+        if not state.youtube_enabled:
+            raise HTTPException(404, "Not Found")
+        return {"upload": state.uploads.get(clip_id), "job": None}
 
     @app.patch("/clips/{clip_id}")
     async def patch_clip(clip_id: int, request: Request):
