@@ -29,6 +29,19 @@ clipskitty:
   # send the window once more to Clips Kitty's own moment finder (its AI setting: local Ollama
   # here, so free), which follows the focus text below. false: keep the plugin's answer.
   fallback_to_clipskitty_finder: true
+  # Our own local plugin (plugins/exact-moments, installed in Clips Kitty): we name the clip's exact
+  # range and Clips Kitty only lays it out, captions and renders it. Clips Kitty's finders kept making
+  # 12-25 s clips that cut the story short. Each window's range is the moment we found plus padding:
+  # a Twitch clip's viewer-clipped range, or before/after a live chat spike's peak (chat reacts late,
+  # so most of it is before). Ends move up to snap_seconds to a sentence break.
+  exact_moments:
+    enabled: true
+    id: gta6clips/exact-moments
+    version: "1.0.0"
+    pad_seconds: 12            # around a Twitch clip (slack for hand trimming)
+    live_before_peak: 50       # live: seconds before the chat spike's peak...
+    live_after_peak: 18        # ...and after it
+    snap_seconds: 4
   # Options sent with every job.
   job:
     gaming: true           # Gaming / Reaction layout: webcam + game
@@ -55,6 +68,16 @@ clips:
   # so the target allows for that.
   min_seconds: 15
   max_seconds: 90
+
+# The check every new clip gets before it reaches the review page. A clip that fails goes to the
+# "Needs a fix" tab instead (with why). A clip that's too short or cut off at the edge of its
+# recording is first sent back once with a wider range, when the recording has room.
+qa:
+  enabled: true
+  min_seconds: 30            # shorter than this: too short to show the whole story
+  edge_seconds: 1.5          # this close to the start or end of the recording: cut off
+  widen_seconds: 15          # how much wider each side, when sending it back
+  require_split: true        # no webcam in the picture (layout "fill"): needs a fix
 
 metadata:
   # Every clip carries these, plus a hashtag of the streamer's name.
@@ -132,6 +155,24 @@ review:
 # Phase 5: uploads to YouTube through Clips Kitty, from the review page's Approved tab
 # (or python -m gta6clips publish). Every upload is scheduled: it goes up private and YouTube
 # publishes it at the slot's time. Nothing is ever uploaded public, and only approved clips go.
+# Twitch's most-viewed GTA 6 clips of permitted Twitch streamers (streamers.yaml, platform: twitch).
+# Viewers clip the best moments; `watch` checks every every_minutes, cuts each clip from the VOD with
+# some lead-in and tail, and Clips Kitty's own moment finder makes the Short around the clipped
+# range. Needs TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET in .env. `twitch-clips --dry-run` previews.
+twitch_clips:
+  enabled: true
+  game_name: Grand Theft Auto VI   # looked up on Twitch at runtime and cached
+  every_minutes: 120
+  hours: 24                  # clips made in the last this many hours
+  min_views: 50
+  max_per_streamer: 3        # per check
+  max_per_run: 6             # per check, all streamers together (most viewed first)
+  lead_in_seconds: 45        # cut from the VOD this long before the clip...
+  tail_seconds: 30           # ...and after it (setup, reaction, and slack for hand trimming)
+  focus: >-
+    Funny or wild GTA 6 moment. Keep the setup, the payoff and the streamer's reaction,
+    and leave 10-15 seconds of slack on each side for hand trimming. Skip story cutscenes.
+
 publish:
   timezone: America/Chicago
   # Daily slots, local time. Gaming Shorts do best mid-afternoon (after school and work) and in the
@@ -153,6 +194,14 @@ publish:
   # to private: scheduled clips would then never go public. After the first such upload, scheduling
   # stops. Set true only if you're fine with private-only uploads (making them public by hand fails too).
   accept_locked_private: false
+  # YouTube channels besides the one connected in Clips Kitty, uploaded to directly (a streamer picks
+  # one with youtube_channel in streamers.yaml). Each gets its own slots. Needs the Google Cloud OAuth
+  # client JSON (Desktop app) at secrets/youtube_client.json, then `connect-youtube <key>` once;
+  # handle is checked at sign-in so uploads can't land on the wrong channel.
+  channels:
+    cutscene_skipped:
+      title: Cutscene Skipped
+      handle: "@CutsceneSkipped"
 
 # Phone notifications through a Discord webhook. Put the webhook link in .env as
 # DISCORD_WEBHOOK_URL (Discord: channel settings → Integrations → Webhooks → New Webhook →

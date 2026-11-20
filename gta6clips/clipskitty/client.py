@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -159,6 +160,29 @@ class ClipsKittyClient:
 
     def media_url(self, clip_id: int) -> str:
         return f"{self.base_url}/media/{int(clip_id)}"
+
+    def download_media(self, clip_id: int, dest: Path) -> Path:
+        """Saves a clip's rendered video (GET /media/{id}) to `dest`."""
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with self._http.stream("GET", f"/media/{int(clip_id)}") as r:
+                if r.status_code >= 400:
+                    raise ClipsKittyError(f"GET /media/{clip_id} -> {r.status_code}")
+                with dest.open("wb") as f:
+                    for chunk in r.iter_bytes():
+                        f.write(chunk)
+        except httpx.ConnectError as exc:
+            raise ClipsKittyError(f"Can't reach Clips Kitty at {self.base_url}. Is the app open?") from exc
+        return dest
+
+    # -- plugins (POST /plugins/plan and /plugins/install, with the session header) ---------
+    def plan_plugin(self, folder: str, session: str) -> dict:
+        return self._request("POST", "/plugins/plan", headers={"X-Clips-Kitty-Session": session},
+                             json={"source": {"kind": "folder", "path": folder}}).json()
+
+    def install_plugin(self, plan_id: str, session: str) -> dict:
+        return self._request("POST", "/plugins/install", headers={"X-Clips-Kitty-Session": session},
+                             json={"plan_id": plan_id}).json()
 
     # -- publishing (supported: GET /youtube/status, POST and GET /clips/{id}/publish) --
     def youtube_status(self) -> dict:

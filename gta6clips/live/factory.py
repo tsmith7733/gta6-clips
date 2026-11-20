@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from ..config import Config
+from ..exact import ExactSettings
 from ..media import MediaToolMissing, measure_loudness
 from ..scoring import ScoringSettings, WindowSettings
 from ..streamers import Streamer, require_permission
@@ -47,6 +48,7 @@ def session_factory(cfg: Config, conn: sqlite3.Connection, *, ffmpeg: Path, ytdl
     scoring = ScoringSettings.from_config(cfg)
     windows = WindowSettings.from_config(cfg)
     live = LiveSettings.from_config(cfg)
+    exact = ExactSettings.from_config(cfg)
     video_format = str(cfg.get("live.video_format") or DEFAULT_FORMAT)
     segment_s = float(cfg.get("live.segment_seconds", 60))
     root = cfg.path("paths.recordings")
@@ -65,6 +67,7 @@ def session_factory(cfg: Config, conn: sqlite3.Connection, *, ffmpeg: Path, ytdl
         return LiveSession(conn=conn, streamer=streamer, check=check, recorder=recorder, chat=chat,
                            measure=lambda p: measure_loudness(ffmpeg, p, scoring.bin_s),
                            cut=lambda segs, s, e, dest: cut_segments(ffmpeg, segs, s, e, dest),
-                           windows_dir=windows_dir, scoring=scoring, windows=windows, live=live)
+                           windows_dir=windows_dir, scoring=scoring, windows=windows, live=live,
+                           exact=(exact.before_peak_s, exact.after_peak_s) if exact.enabled else None)
 
     return make

@@ -1,0 +1,41 @@
+manifest_version: 1
+id: gta6clips/exact-moments
+name: Exact moments (gta6-clips)
+version: 1.0.0
+kind: pipeline
+capability: highlight_detection
+description: >
+  Makes one clip from each time range the gta6-clips orchestrator names in its settings,
+  moving each end to the nearest sentence break in the transcript so a clip doesn't start
+  or stop mid-sentence. It picks nothing on its own and needs no network.
+author: {name: gta6-clips}
+license: MIT
+requires: {clips_kitty: '>=2.1.0', plugin_api: 1}
+run:
+  command: ['{python}', src/main.py]
+  timeout_minutes: 5
+execution: local
+inputs: [transcript]
+outputs: [ranges]
+settings:
+  ranges:
+    type: string
+    default: ''
+    max_length: 200
+    title: Time ranges in seconds, start-end, separated by semicolons (e.g. 42.5-101)
+  snap_seconds:
+    type: number
+    default: 4
+    minimum: 0
+    maximum: 15
+    title: How far an end may move to reach a sentence break
+  label:
+    type: string
+    default: moment
+    max_length: 64
+    title: Label for the clips
+permissions: [transcript.read]
+network: []
+sends: []
+requirements: {gpu: none, os: [windows, macos, linux]}
+category: gaming

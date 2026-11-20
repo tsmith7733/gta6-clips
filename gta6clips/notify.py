@@ -92,7 +92,9 @@ class Notifications:
                  score: int | None = None) -> None:
         bits = [f"{seconds:.0f}s" if seconds else "", f"score {score}" if score is not None else ""]
         extra = ", ".join(b for b in bits if b)
-        if status == "spoiler_hold":
+        if status == "needs_fix":
+            head = "🛠 New clip needs a fix (see the Needs a fix tab)"
+        elif status == "spoiler_hold":
             head = "🙈 New clip held as a possible spoiler"
         else:
             head = "🎬 New clip ready for review"

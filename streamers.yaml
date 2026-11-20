@@ -12,3 +12,54 @@ streamers:
     permission_source: "Confirmed by the channel owner (Tyler) on 2026-11-18"
     credit: "🎥 Clip from The Burnt Peanut: https://www.youtube.com/@TheBurntPeanut"
     priority: 1                # 1 = highest
+
+  # Twitch: only their most-viewed GTA 6 clips are used (twitch_clips in config.yaml).
+  - name: CaseOh
+    platform: twitch
+    channel_url: https://www.twitch.tv/caseoh_
+    permission: true
+    permission_source: "Cleared for clipping by the channel owner (Tyler) on 2026-11-20"
+    credit: "🎥 Clip from CaseOh: https://www.twitch.tv/caseoh_"
+    priority: 2
+    youtube_channel: cutscene_skipped
+    hold_uploads_while_live: true   # owner's rule (2026-11-20): nothing goes to YouTube while he's live
+  - name: Kai Cenat
+    platform: twitch
+    channel_url: https://www.twitch.tv/kaicenat
+    permission: true
+    permission_source: "Cleared for clipping by the channel owner (Tyler) on 2026-11-20"
+    credit: "🎥 Clip from Kai Cenat: https://www.twitch.tv/kaicenat"
+    priority: 3
+    youtube_channel: cutscene_skipped
+  - name: Asmongold
+    platform: twitch
+    channel_url: https://www.twitch.tv/zackrawrr
+    permission: true
+    permission_source: "Cleared for clipping by the channel owner (Tyler) on 2026-11-20"
+    credit: "🎥 Clip from Asmongold: https://www.twitch.tv/zackrawrr"
+    priority: 4
+    youtube_channel: cutscene_skipped
+  - name: xQc
+    platform: twitch
+    channel_url: https://www.twitch.tv/xqc
+    permission: true
+    permission_source: "Cleared for clipping by the channel owner (Tyler) on 2026-11-20"
+    credit: "🎥 Clip from xQc: https://www.twitch.tv/xqc"
+    priority: 5
+    youtube_channel: cutscene_skipped
+  - name: HutchMF
+    platform: twitch
+    channel_url: https://www.twitch.tv/hutchmf
+    permission: true
+    permission_source: "Cleared for clipping by the channel owner (Tyler) on 2026-11-20"
+    credit: "🎥 Clip from HutchMF: https://www.twitch.tv/hutchmf"
+    priority: 8
+    youtube_channel: cutscene_skipped
+  - name: Tfue
+    platform: twitch
+    channel_url: https://www.twitch.tv/tfue
+    permission: true
+    permission_source: "Cleared for clipping by the channel owner (Tyler) on 2026-11-20"
+    credit: "🎥 Clip from Tfue: https://www.twitch.tv/tfue"
+    priority: 9
+    youtube_channel: cutscene_skipped

@@ -251,7 +251,7 @@ def _loudness_for(moment_utc: float):
 def _fake_cut(segments, start_utc, end_utc, dest: Path) -> Path:
     assert any(s.start_utc < end_utc and s.end_utc > start_utc for s in segments)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(b"mp4")
+    dest.write_bytes(b"mp4" * 5000)   # sized like a real (tiny) video
     return dest
 
 

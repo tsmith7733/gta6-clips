@@ -222,3 +222,62 @@ def test_approving_without_auto_schedule_uploads_nothing(page, ck_state, conn):
     _clip(ck_state, conn, 801)
     r = page.post("/api/clips/801/approve", json={"title": "Soccer Practice Rush!"}).json()
     assert r["status"] == "approved" and "scheduled" not in r and not ck_state.publishes
+
+
+# -- streamers whose clips wait until they're offline ------------------------------------
+
+@pytest.fixture
+def held_streamers(workdir):
+    from gta6clips.streamers import load_streamers
+    text = (workdir / "streamers.yaml").read_text(encoding="utf-8").replace(
+        "    priority: 1\n", "    priority: 1\n    hold_uploads_while_live: true\n", 1)
+    (workdir / "streamers.yaml").write_text(text, encoding="utf-8")
+    return load_streamers(workdir / "streamers.yaml")
+
+
+def test_clips_of_a_live_streamer_wait_and_go_once_they_are_offline(conn, ck, ck_state, cfg, held_streamers):
+    live = {"now": True}
+    pub = PublishService(conn=conn, client=ck, streamers=held_streamers, cfg=cfg, now=lambda: NOW,
+                         is_live=lambda s: live["now"])
+    _approved(ck_state, conn, 801)
+    plan = pub.plan()
+    assert not plan.items and "is live right now" in plan.skipped[0]["reason"]
+    assert pub.schedule_one(801) == {"not_scheduled": plan.skipped[0]["reason"]}
+    assert pub.upload_held() == {"started": [], "skipped": plan.skipped} and not ck_state.publishes
+    live["now"] = False
+    started = pub.upload_held()["started"]
+    assert [s["clip_id"] for s in started] == [801] and ck_state.publishes[0][1]["privacy"] == "private"
+    assert pub.held_for_live() == []
+
+
+def test_unknown_live_status_holds_too(conn, ck, ck_state, cfg, held_streamers):
+    pub = PublishService(conn=conn, client=ck, streamers=held_streamers, cfg=cfg, now=lambda: NOW,
+                         is_live=lambda s: None)
+    _approved(ck_state, conn, 801)
+    assert "couldn't check" in pub.plan().skipped[0]["reason"]
+    no_check = PublishService(conn=conn, client=ck, streamers=held_streamers, cfg=cfg, now=lambda: NOW)
+    assert not no_check.plan().items
+
+
+def test_twitch_live_check():
+    import httpx
+    from gta6clips.streamers import Streamer
+    from gta6clips.twitch import Helix, TwitchLiveCheck
+
+    state = {"live": True, "calls": 0}
+
+    def handler(request):
+        if request.url.host == "id.twitch.tv":
+            return httpx.Response(200, json={"access_token": "t", "expires_in": 5000})
+        state["calls"] += 1
+        assert request.url.params["user_login"] == "caseoh_"
+        return httpx.Response(200, json={"data": [{"type": "live"}] if state["live"] else []})
+
+    t = {"now": 0.0}
+    check = TwitchLiveCheck(Helix("c", "s", http=httpx.Client(transport=httpx.MockTransport(handler))),
+                            clock=lambda: t["now"])
+    caseoh = Streamer("CaseOh", "twitch", "https://www.twitch.tv/caseoh_", True, "credit")
+    assert check(caseoh) is True and check(caseoh) is True and state["calls"] == 1   # cached
+    state["live"], t["now"] = False, 200
+    assert check(caseoh) is False
+    assert check(Streamer("P", "youtube", "https://www.youtube.com/@p", True, "c")) is None

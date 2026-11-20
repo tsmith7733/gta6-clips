@@ -1,6 +1,7 @@
 """Our own SQLite state. We never write to Clips Kitty's database: only its API.
 
-Clip statuses: pending_review | spoiler_hold -> approved | rejected -> published.
+Clip statuses: pending_review | spoiler_hold -> approved | rejected -> published. A clip the quality
+check finds a problem in waits as needs_fix until it's re-rendered, sent to review anyway, or rejected.
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-CLIP_STATUSES = ("pending_review", "spoiler_hold", "approved", "rejected", "published")
+CLIP_STATUSES = ("pending_review", "spoiler_hold", "needs_fix", "approved", "rejected", "published")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS windows (
@@ -109,6 +110,13 @@ CREATE TABLE IF NOT EXISTS segments (
     deleted    INTEGER NOT NULL DEFAULT 0     -- 1 once the janitor removed the file
 );
 CREATE INDEX IF NOT EXISTS segments_stream_time ON segments(stream_id, start_utc);
+
+-- Small cached values (the Twitch GTA 6 game id).
+CREATE TABLE IF NOT EXISTS kv (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 # Columns added to tables that already exist in an older orchestrator.db.
@@ -123,6 +131,13 @@ MIGRATIONS = {
         "finder": "TEXT NOT NULL DEFAULT 'gta_plugin'",   # gta_plugin | clipskitty (the fallback)
         "render_retries": "INTEGER NOT NULL DEFAULT 0",     # times sent again after Clips Kitty's render failed
         "not_before": "REAL",                               # don't send before this (UTC seconds)
+        "focus": "TEXT NOT NULL DEFAULT ''",                # this window's own focus text (Twitch clips)
+        "moment_start_s": "REAL",                           # the clip we ask for, in seconds of the cut file
+        "moment_end_s": "REAL",                             # (sent to the exact-moments plugin)
+        "widened": "INTEGER NOT NULL DEFAULT 0",            # times the check sent it back wider
+    },
+    "publish_log": {
+        "channel": "TEXT NOT NULL DEFAULT ''",   # '' = Clips Kitty's channel, else a publish.channels key
     },
     "clips": {
         "review_from": "TEXT NOT NULL DEFAULT ''",   # pending_review | spoiler_hold before the owner decided
@@ -177,7 +192,7 @@ def add_window(conn: sqlite3.Connection, *, streamer: str, source_url: str, sour
 
 def update_window(conn: sqlite3.Connection, window_id: int, **fields) -> None:
     allowed = {"ck_job_id", "ck_video_id", "state", "error", "start_utc", "end_utc", "local_path", "finder",
-               "render_retries", "not_before"}
+               "render_retries", "not_before", "focus", "moment_start_s", "moment_end_s", "widened"}
     bad = set(fields) - allowed
     if bad:
         raise ValueError(f"unknown window fields: {bad}")
@@ -239,9 +254,10 @@ def clips_by_status(conn: sqlite3.Connection, status: str | None = None) -> list
 # to `published`, and nothing moves a clip out of `published`.
 REVIEW_MOVES = {
     "approved": ("pending_review", "spoiler_hold"),
-    "rejected": ("pending_review", "spoiler_hold", "approved"),
-    "pending_review": ("rejected", "approved"),        # undo, back to where it was reviewed from
-    "spoiler_hold": ("rejected", "approved"),           # (a spoiler goes back to the Spoilers tab)
+    "rejected": ("pending_review", "spoiler_hold", "approved", "needs_fix"),
+    "pending_review": ("rejected", "approved", "needs_fix"),   # undo, or "send to review anyway"
+    "spoiler_hold": ("rejected", "approved", "needs_fix"),      # (a spoiler goes back to the Spoilers tab)
+    "needs_fix": ("pending_review", "spoiler_hold"),            # the quality check found a problem
 }
 
 
@@ -293,11 +309,11 @@ LIVE_PUBLISH_STATES = ("submitted", "uploaded", "locked_private")   # occupy a s
 
 
 def add_publish(conn: sqlite3.Connection, *, ck_clip_id: int, publish_job_id: int | None, title: str,
-                publish_at: str) -> int:
+                publish_at: str, channel: str = "") -> int:
     cur = conn.execute(
-        "INSERT INTO publish_log (ck_clip_id, publish_job_id, title, publish_at, state, privacy, created_at, "
-        "updated_at) VALUES (?, ?, ?, ?, 'submitted', 'private', ?, ?)",
-        (int(ck_clip_id), publish_job_id, title, publish_at, _now(), _now()))
+        "INSERT INTO publish_log (ck_clip_id, publish_job_id, title, publish_at, state, privacy, channel, "
+        "created_at, updated_at) VALUES (?, ?, ?, ?, 'submitted', 'private', ?, ?, ?)",
+        (int(ck_clip_id), publish_job_id, title, publish_at, channel, _now(), _now()))
     conn.commit()
     return int(cur.lastrowid)
 
@@ -457,9 +473,26 @@ def mark_segment_deleted(conn: sqlite3.Connection, segment_id: int) -> None:
 
 
 def live_windows(conn: sqlite3.Connection, states: tuple[str, ...]) -> list[sqlite3.Row]:
-    """Windows cut from live recordings (their stream's video_id is '<id>@<epoch>')."""
+    """Windows the watcher's dispatcher sends: cut from live recordings (stream video_id '<id>@<epoch>')
+    or from Twitch's top clips (stream video_id '<login>@clips')."""
     marks = ",".join("?" * len(states))
     return conn.execute(
-        f"SELECT w.*, s.title AS stream_title FROM windows w JOIN streams s ON s.id = w.stream_id"
+        f"SELECT w.*, s.title AS stream_title, s.video_id AS stream_video_id FROM windows w"
+        f" JOIN streams s ON s.id = w.stream_id"
         f" WHERE s.video_id LIKE '%@%' AND w.state IN ({marks}) ORDER BY w.score DESC, w.id",
         states).fetchall()
+
+
+def kv_get(conn: sqlite3.Connection, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def kv_set(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute("INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET"
+                 " value = excluded.value, updated_at = excluded.updated_at", (key, value, _now()))
+    conn.commit()
+
+
+def windows_for_source(conn: sqlite3.Connection, source_url: str) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM windows WHERE source_url = ?", (source_url,)).fetchall()

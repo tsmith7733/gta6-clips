@@ -93,7 +93,7 @@
 
 <script>
 const TABS = [
-  ["pending_review", "To review"], ["spoiler_hold", "Spoilers"], ["approved", "Approved"],
+  ["pending_review", "To review"], ["needs_fix", "Needs a fix"], ["spoiler_hold", "Spoilers"], ["approved", "Approved"],
   ["rejected", "Rejected"], ["published", "Published"],
 ];
 let tab = "pending_review";
@@ -150,6 +150,10 @@ function card(c) {
       ${c.status === "spoiler_hold" ? `<label class="confirm"><input type="checkbox" class="notspoiler"> Not a spoiler</label>` : ""}
       <button class="primary" data-do="approve">Approve</button>
       <button class="danger" data-do="reject">Reject</button>`
+    : c.status === "needs_fix" ? `
+      <button class="primary" data-do="rerender" title="Send its recording to Clips Kitty again (after drawing the webcam box for this streamer in Clips Kitty, for a missing split screen)">Re-render</button>
+      <button data-do="to-review">Send to review as is</button>
+      <button class="danger" data-do="reject">Reject</button>`
     : c.status === "approved" && u && ["submitted", "uploaded", "locked_private"].includes(u.state) ? ""
     : c.status === "approved" ? `
       <button data-do="title">Save title</button>
@@ -160,7 +164,7 @@ function card(c) {
     <video controls preload="metadata" src="/media/${c.id}"></video>
     <div>
       <div class="meta"><b>${esc(c.streamer)}</b><span>clip ${c.id}</span><span>${c.seconds}s</span>
-        <span>score ${c.score ?? "–"}</span></div>
+        <span>score ${c.score ?? "–"}</span>${c.channel ? `<span>→ ${esc(c.channel)}</span>` : ""}</div>
       <div class="src" title="${esc(c.source_title)}">${esc(c.source_title)}</div>
       ${titleBlock}
       ${upload}
@@ -212,9 +216,10 @@ async function act(el, what, button) {
   el.querySelectorAll("button").forEach(b => b.disabled = true);
   try {
     const c = await api(`/api/clips/${id}/${what}`, body);
-    if (what === "approve" && c.scheduled) toast(`Approved and scheduled for ${c.scheduled.when}: ${c.title}`);
+    if (what === "approve" && c.scheduled) toast(`Approved and scheduled on ${c.scheduled.channel || "YouTube"} for ${c.scheduled.when}: ${c.title}`);
     else if (what === "approve" && c.not_scheduled) toast(`Approved, but not scheduled: ${c.not_scheduled}`, true);
-    else toast({approve: `Approved: ${c.title}`, reject: "Rejected", undo: "Moved back", title: "Title saved"}[what]);
+    else toast({approve: `Approved: ${c.title}`, reject: "Rejected", undo: "Moved back", title: "Title saved",
+                "to-review": "Sent to review", rerender: "Sent to Clips Kitty again; the new clip will show up here when it's done"}[what]);
     await load();
   } catch (err) {
     toast(err.message, true);
@@ -233,7 +238,14 @@ async function load(onlyIfChanged = false) {
     shown = ids;
     if (data.followed?.length) toast(`Followed ${data.followed.length} clip(s) Clips Kitty rendered again.`);
     const list = $("#list");
-    const panel = tab === "approved" ? `<section id="publish"><h2>Publish to YouTube</h2><p>Checking…</p></section>` : "";
+    const panel = tab === "approved" ? `<section id="publish"><h2>Publish to YouTube</h2><p>Checking…</p></section>`
+      : tab === "needs_fix" ? `<section id="publish"><h2>Clips the quality check held back</h2>
+        <p>Each says why under its title. <b>No split screen:</b> Clips Kitty didn't find this streamer's webcam. Open one
+        of their clips in the Clips Kitty studio, draw the webcam box in the Gaming layout editor and tick
+        <i>Remember for this creator's next videos</i>, then click <b>Re-render</b> here. You only do this once per
+        streamer. <b>Too short or cut off:</b> it was already sent back once with a wider range; Re-render tries
+        again, or send it to review as it is.</p></section>`
+      : "";
     list.innerHTML = panel + (data.clips.length ? data.clips.map(card).join("")
       : `<p class="empty">Nothing here.</p>`);
     if (tab === "approved") drawPublish();
@@ -271,7 +283,7 @@ async function makePlan() {
       return;
     }
     out.innerHTML = `<table>${plan.items.map(i => `<tr><td class="when">${esc(i.when)}</td>
-        <td>clip ${i.clip_id}</td><td>${esc(i.title)}</td></tr>`).join("")}</table>${skipped}
+        <td>clip ${i.clip_id}</td><td>${esc(i.title)}</td><td class="when">${esc(i.channel || "")}</td></tr>`).join("")}</table>${skipped}
       <div class="actions"><button class="primary" id="go">Upload ${plan.items.length} clip(s) on this schedule</button>
         <button id="cancel">Cancel</button></div>`;
     $("#cancel").addEventListener("click", () => { out.innerHTML = ""; $("#plan").disabled = false; });

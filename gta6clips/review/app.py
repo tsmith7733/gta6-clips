@@ -66,6 +66,7 @@ def create_app(service: ReviewService, client: ClipsKittyClient, publisher: Publ
             for c in service.cards(status):
                 d = c.as_dict()
                 d["upload"] = publisher.upload_for(c.id) if publisher is not None else None
+                d["channel"] = publisher.channel_for_streamer(c.streamer) if publisher is not None else ""
                 cards.append(d)
             return {"counts": service.counts(), "clips": cards, "followed": moved}
         return run(go)
@@ -118,6 +119,14 @@ def create_app(service: ReviewService, client: ClipsKittyClient, publisher: Publ
     @app.post("/api/clips/{clip_id}/reject")
     def reject(clip_id: int, body: dict = Body(default={})):
         return run(lambda: service.reject(clip_id).as_dict())
+
+    @app.post("/api/clips/{clip_id}/to-review")
+    def to_review(clip_id: int, body: dict = Body(default={})):
+        return run(lambda: service.send_to_review(clip_id).as_dict())
+
+    @app.post("/api/clips/{clip_id}/rerender")
+    def rerender(clip_id: int, body: dict = Body(default={})):
+        return run(lambda: service.rerender(clip_id).as_dict())
 
     @app.post("/api/clips/{clip_id}/undo")
     def undo(clip_id: int, body: dict = Body(default={})):

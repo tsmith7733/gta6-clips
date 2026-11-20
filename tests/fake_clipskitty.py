@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 PLUGIN_ID = "colingpt9/gta-vi-highlights"
+EXACT_ID = "gta6clips/exact-moments"
 
 
 @dataclass
@@ -22,7 +23,8 @@ class FakeState:
     privacy: str = "private"
     preflight_ok: bool = True
     plugins: list[dict] = field(default_factory=lambda: [
-        {"id": PLUGIN_ID, "version": "0.4.1", "enabled": True, "problems_here": []}
+        {"id": PLUGIN_ID, "version": "0.4.1", "enabled": True, "problems_here": []},
+        {"id": EXACT_ID, "version": "1.0.0", "enabled": True, "problems_here": []},
     ])
     queue_full: bool = False
     paused: bool = False
@@ -33,6 +35,7 @@ class FakeState:
     fail_jobs: bool = False
     clips_per_video: int = 2
     plugin_finds_nothing: bool = False   # the GTA plugin's answer on a window that's only funny
+    layout: str = "split"                # the gaming layout clips are rendered with ("fill": no webcam found)
     render_fails: int = 0                # this many jobs find moments but every render fails (CUDA)
     clips: dict[int, dict] = field(default_factory=dict)
     submissions: list[dict] = field(default_factory=list)
@@ -105,9 +108,11 @@ def create_app(state: FakeState) -> FastAPI:
                 return {"job_id": None, "already_queued": True, "video_id": video_id,
                         "queued_job_id": job["id"]}
         state._next_job += 1
+        pid = (pipeline["id"] if isinstance(pipeline, dict) else pipeline) if pipeline else ""
+        settings = pipeline.get("settings", {}) if isinstance(pipeline, dict) else {}
         state.jobs[state._next_job] = {"id": state._next_job, "type": "process", "status": "queued",
                                        "error": "", "video_id": video_id, "polls": 0,
-                                       "pipeline": bool(pipeline)}
+                                       "pipeline": pid, "ranges": settings.get("ranges", "")}
         return {"job_id": state._next_job}
 
     @app.post("/jobs")
@@ -130,7 +135,10 @@ def create_app(state: FakeState) -> FastAPI:
             return
         job["status"] = "done"
         state.processed.add(job["video_id"])
-        found = 0 if state.plugin_finds_nothing and job.get("pipeline") else state.clips_per_video
+        exact = job.get("pipeline") == EXACT_ID
+        found = 0 if state.plugin_finds_nothing and job.get("pipeline") == PLUGIN_ID else state.clips_per_video
+        if exact:   # our plugin: one clip per named range, exactly as asked
+            found = len([r for r in job["ranges"].split(";") if r])
         if found and state.render_fails > 0:
             state.render_fails -= 1
             job["log"] = ("[4/4] Rendering clips...\n      Render failed for 190s-204s: CUDA error: unknown error\n"
@@ -139,9 +147,13 @@ def create_app(state: FakeState) -> FastAPI:
         for i in range(found):
             state._next_clip += 1
             start = 100.0 + 60 * i
+            end = start + (30 if i == 0 else 70)
+            if exact:
+                start, end = (float(x) for x in job["ranges"].split(";")[i].split("-"))
             state.clips[state._next_clip] = {
                 "id": state._next_clip, "video_id": job["video_id"],
-                "start_s": start, "end_s": start + (30 if i == 0 else 70), "score": 90 - i,
+                "start_s": start, "end_s": end, "score": 90 - i,
+                "render_opts": {"gaming": {"layout": state.layout, "by": "video"}},
                 "title": f"Draft title {i}", "description": "A short summary written by the model.",
                 "hashtags": ["#clip", "#gta6"], "hook": f"no way {i}", "status": "queued",
                 "lines": [{"start": 0.0, "end": 1.0, "text": f"he crashed the car {i}"}],

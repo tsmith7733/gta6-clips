@@ -26,6 +26,7 @@ from ..config import Config
 from ..llm import TitleWriter
 from ..sources import looks_like_gta6
 from ..streamers import PermissionDenied, Streamer, permitted_streamer_for, require_permission
+from ..twitch_clips import TwitchClipSource
 from ..vod import NotReady
 from .dispatch import Dispatcher
 from .session import LiveSession
@@ -34,6 +35,7 @@ from .youtube import LiveCheck, check_youtube_live
 log = logging.getLogger(__name__)
 
 SUPPORTED = ("youtube",)
+HELD_UPLOADS_EVERY_S = 600.0
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,7 @@ class Watcher:
     def __init__(self, *, cfg: Config, client: ClipsKittyClient, conn: sqlite3.Connection,
                  streamers: list[Streamer], writer: TitleWriter, make_session: SessionFactory,
                  check_live: Callable[[str], LiveCheck] = check_youtube_live, allow_non_gta: bool = False,
+                 clip_source: TwitchClipSource | None = None, publisher=None,
                  clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep):
         self.cfg = cfg
         self.client = client
@@ -80,8 +83,14 @@ class Watcher:
         self.dispatcher = Dispatcher(cfg=cfg, client=client, conn=conn, streamers=streamers, writer=writer,
                                      clock=clock)
         self.sessions: dict[str, LiveSession] = {}      # streamer name -> session
+        self.clip_source = clip_source        # Twitch's top GTA 6 clips, every twitch_clips.every_minutes
         self._last_poll = -1e18
         self._last_janitor = -1e18
+        self._last_clips = clip_source.last_run() if clip_source is not None else -1e18
+        self._said_unsupported: set[str] = set()
+        # Uploads the approved clips of hold_uploads_while_live streamers once they're offline.
+        self.publisher = publisher
+        self._last_held = -1e18
 
     # -- who we watch ----------------------------------------------------------------
     def watched(self) -> list[Streamer]:
@@ -91,7 +100,10 @@ class Watcher:
             if not s.permission:
                 continue
             if s.platform not in SUPPORTED:
-                log.info("%s is on %s, which the live watcher doesn't support yet; skipped.", s.name, s.platform)
+                if s.name not in self._said_unsupported:
+                    self._said_unsupported.add(s.name)
+                    how = " (their Twitch clips are picked up instead)" if s.platform == "twitch" and                         self.clip_source is not None else ""
+                    log.info("%s is on %s, which the live recorder doesn't support yet%s.", s.name, s.platform, how)
                 continue
             out.append(require_permission(s))
         return out
@@ -103,15 +115,19 @@ class Watcher:
         if not readiness.ok:
             raise NotReady("Clips Kitty isn't ready:\n- " + "\n- ".join(readiness.problems))
         watched = self.watched()
-        if not watched:
+        if not watched and self.clip_source is None:
             raise PermissionDenied("No permitted YouTube streamer in streamers.yaml, so there's nothing to watch.")
         return watched
 
     # -- the loop --------------------------------------------------------------------
     def run(self, *, stop_after_s: float | None = None) -> None:
         watched = self.preflight()
-        log.info("Watching %s (every %.0f s). Ctrl+C stops.", ", ".join(s.name for s in watched),
-                 self.settings.poll_s)
+        if watched:
+            log.info("Watching %s (every %.0f s). Ctrl+C stops.", ", ".join(s.name for s in watched),
+                     self.settings.poll_s)
+        if self.clip_source is not None:
+            log.info("Checking Twitch's top GTA 6 clips every %.0f min. Ctrl+C stops.",
+                     self.clip_source.settings.every_s / 60)
         began = self.clock()
         try:
             while stop_after_s is None or self.clock() - began < stop_after_s:
@@ -136,6 +152,23 @@ class Watcher:
             self.dispatcher.tick()
         except Exception:  # Clips Kitty or the database hiccuped: keep recording, try again next tick
             log.exception("Problem sending or collecting windows")
+        if self.clip_source is not None and now - self._last_clips >= self.clip_source.settings.every_s:
+            self._last_clips = now
+            try:
+                run = self.clip_source.run_once()
+                if run.queued:
+                    log.info("Queued %d Twitch clip(s) for Clips Kitty", len(run.queued))
+            except Exception:   # Twitch or a download hiccuped: try again next time
+                log.exception("Problem checking Twitch clips")
+        if self.publisher is not None and now - self._last_held >= HELD_UPLOADS_EVERY_S:
+            self._last_held = now
+            try:
+                result = self.publisher.upload_held()
+                for s in result["started"]:
+                    log.info("Clip %s held while its streamer was live is now scheduled for %s", s["clip_id"],
+                             s["when"])
+            except Exception:
+                log.exception("Problem uploading clips held while their streamer was live")
         if now - self._last_janitor >= self.settings.janitor_every_s:
             self._last_janitor = now
             self.janitor(now)

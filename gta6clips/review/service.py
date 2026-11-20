@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import sqlite3
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from .. import db
@@ -22,7 +24,7 @@ from ..vod import _streamer_named
 
 log = logging.getLogger(__name__)
 
-TABS = ("pending_review", "spoiler_hold", "approved", "rejected", "published")
+TABS = ("pending_review", "needs_fix", "spoiler_hold", "approved", "rejected", "published")
 MAX_TITLE_CHARS = 100          # YouTube's limit
 RECONCILE_EVERY_S = 20.0
 
@@ -188,7 +190,7 @@ class ReviewService:
     def reject(self, clip_id: int) -> Card:
         card = self.card(clip_id)
         self._not_uploading(clip_id)
-        if card.status not in ("pending_review", "spoiler_hold", "approved"):
+        if card.status not in ("pending_review", "spoiler_hold", "approved", "needs_fix"):
             raise ReviewError(f"This clip is {card.status}; it can't be rejected.")
         db.set_clip_status(self.conn, clip_id, "rejected", note="rejected")
         return self.card(clip_id)
@@ -202,6 +204,49 @@ class ReviewService:
         row = db.get_clip(self.conn, clip_id)
         back = row["review_from"] or "pending_review"
         db.set_clip_status(self.conn, clip_id, back, note=f"decision undone; back to {back}")
+        return self.card(clip_id)
+
+    def send_to_review(self, clip_id: int) -> Card:
+        """A clip the quality check held, judged fine by the owner: on to the review queue."""
+        card = self.card(clip_id)
+        if card.status != "needs_fix":
+            raise ReviewError(f"This clip is {card.status}, not waiting for a fix.")
+        back = db.get_clip(self.conn, clip_id)["review_from"] or "pending_review"
+        db.set_clip_status(self.conn, clip_id, back, note="sent to review as it is")
+        return self.card(clip_id)
+
+    def rerender(self, clip_id: int, *, widen_s: float = 15.0) -> Card:
+        """Sends the clip's recording to Clips Kitty again as a new video (after the owner drew the
+        webcam box for this streamer in Clips Kitty, say). The running watcher sends it; the new clip
+        goes through the quality check again, and this one is rejected as replaced."""
+        card = self.card(clip_id)
+        if card.status != "needs_fix":
+            raise ReviewError(f"This clip is {card.status}; only clips waiting for a fix are re-rendered here.")
+        self._streamer(card)                                        # the permission gate
+        clip = db.get_clip(self.conn, clip_id)
+        window = self.conn.execute("SELECT * FROM windows WHERE id = ?", (clip["window_id"],)).fetchone()             if clip["window_id"] else None
+        src = Path(window["local_path"]) if window is not None and window["local_path"] else None
+        stream = self.conn.execute("SELECT video_id FROM streams WHERE id = ?", (window["stream_id"],)).fetchone()             if window is not None and window["stream_id"] else None
+        if stream is None or "@" not in stream["video_id"]:
+            raise ReviewError("Only clips from live recordings and Twitch clips are sent again from here (the "
+                              "watcher sends them). Fix this one in the Clips Kitty studio, or reject it.")
+        if src is None or not src.is_file():
+            raise ReviewError("This clip's recording isn't on this PC any more, so it can't be sent again. "
+                              "Fix it in the Clips Kitty studio, or reject it.")
+        file_s = float((window["offset_end_s"] or 0) - (window["offset_start_s"] or 0))
+        start, end = window["moment_start_s"], window["moment_end_s"]
+        if start is None or end is None:   # Clips Kitty picked this one: keep its moment, with some slack
+            start = max(0.0, float(clip["start_s"] or 0) - widen_s)
+            end = float(clip["end_s"] or 0) + widen_s
+            if file_s:
+                end = min(file_s, end)
+        n = 1 + sum(1 for _ in src.parent.glob(f"{src.stem.split('_fix')[0]}_fix*{src.suffix}"))
+        dest = src.with_name(f"{src.stem.split('_fix')[0]}_fix{n}{src.suffix}")   # a new video for Clips Kitty
+        shutil.copy2(src, dest)
+        db.update_window(self.conn, window["id"], state="planned", ck_job_id=None, local_path=str(dest),
+                         finder="exact", moment_start_s=float(start), moment_end_s=float(end), not_before=None)
+        db.set_clip_status(self.conn, clip_id, "rejected",
+                           note="sent to Clips Kitty again; the new clip replaces this one")
         return self.card(clip_id)
 
     # -- helpers ---------------------------------------------------------------------

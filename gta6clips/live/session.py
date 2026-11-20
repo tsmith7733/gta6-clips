@@ -43,8 +43,10 @@ class LiveSession:
                  chat: ChatFeed | None, measure: Callable[[Path], list[float]],
                  cut: Callable[[Sequence[Segment], float, float, Path], Path], windows_dir: Path,
                  scoring: ScoringSettings, windows: WindowSettings, live: LiveSettings,
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time, exact: tuple[float, float] | None = None):
         self.conn = conn
+        # (seconds before, after) the spike's peak for the exact-moments plugin; None: let Clips Kitty pick.
+        self.exact = exact
         self.streamer = require_permission(streamer)
         self.check = check
         self.recorder = recorder
@@ -186,3 +188,8 @@ class LiveSession:
             log.error("Couldn't cut the window at %s: %s", _clock(w.peak_s), exc)
             return
         db.update_window(self.conn, window_id, local_path=str(path))
+        if self.exact is not None:   # the clip we'll ask for: mostly before the peak (chat reacts late)
+            before, after = self.exact
+            peak = d.peak_s - w.start_s
+            db.update_window(self.conn, window_id, finder="exact", moment_start_s=max(0.0, peak - before),
+                             moment_end_s=min(w.end_s - w.start_s, peak + after))

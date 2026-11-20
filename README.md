@@ -190,6 +190,36 @@ After 45 minutes with nothing sent, the bar drops to 3.5, so a quieter stream st
 
 **Other games:** a stream whose title doesn't mention GTA 6 isn't recorded. `--allow-non-gta` records it anyway (handy for a test). If he switches games mid-stream, the recording stops after two checks in a row (about 5 minutes).
 
+## Twitch's top clips
+
+Viewers already clip a Twitch stream's best moments. For each Twitch streamer in `streamers.yaml` with `permission: true`, `watch` asks Twitch every 2 hours (`twitch_clips.every_minutes`) for their most-viewed GTA 6 clips of the last 24 hours (at least `min_views`, up to 3 per streamer and 6 per check). Each clip is cut from the stream's VOD with 45 s before it and 30 s after (`lead_in_seconds`, `tail_seconds`), so the Short gets its setup and you have slack to trim. Clips Kitty's own moment finder makes the Short around the clipped time range, and the clip lands on the review page with the streamer's credit, like any other. A clip without a VOD (deleted or subscriber-only) is used as it is. A clip is never sent twice, nor a second clip of the same moment.
+
+Needs the Twitch app keys (below). Preview what would be picked, without downloading anything:
+
+```powershell
+.venv\Scripts\python.exe -m gta6clips twitch-clips --dry-run
+```
+
+Without `--dry-run` it cuts and queues them right away; the running `watch` sends them to Clips Kitty. Twitch streamers aren't recorded live yet: only their clips are used.
+
+## Clip length and the quality check
+
+Clips Kitty's own moment finders kept making 12–25 s clips that cut the story short. So this repo ships a small Clips Kitty plugin, `plugins\exact-moments` (no network; it only reads the transcript). We tell it the exact range and it makes one clip of that range, moving each end up to 4 s to a sentence break. Clips Kitty still does the split layout, captions, titles and rendering. The range is:
+
+- for a Twitch clip: what viewers clipped, plus 12 s each side (`clipskitty.exact_moments.pad_seconds`);
+- live: 50 s before the chat spike's peak to 18 s after it (chat reacts late), `live_before_peak` / `live_after_peak`.
+
+Install it, or update it after changing it (Clips Kitty open):
+
+```powershell
+.venv\Scripts\python.exe -m gta6clips install-plugin
+```
+
+Every new clip is then checked before it reaches the review page (`qa:` in `config.yaml`):
+
+- **Too short** (under 30 s) **or cut off** at the start or end of its recording: sent back to Clips Kitty once with 15 s more on each side, when the recording has room. The short one is rejected with a note.
+- **No split screen** (Clips Kitty didn't find the webcam), or still too short: it goes to the **Needs a fix** tab instead of To review, saying why. There you can **Re-render** it, **Send to review as is**, or **Reject** it. For a missing split screen, draw the webcam box once for that streamer in Clips Kitty's Gaming layout editor and tick *Remember for this creator's next videos*, then Re-render: every later clip of theirs comes out split.
+
 ## Review clips (Phase 4)
 
 ```powershell
@@ -235,6 +265,22 @@ While the Google project's consent screen is in **Testing**, Google makes you re
 
 **Important: YouTube's API audit.** YouTube has locked uploads from Google Cloud projects that haven't passed its API audit to private, permanently, so a scheduled clip would never go public. If that happens, the first upload shows **locked to private** and scheduling stops. The fix is YouTube's audit (free; Google Cloud console → YouTube API Services → audit and quota extension form), or uploading by hand from Clips Kitty. Start with one clip to find out.
 
+## A second YouTube channel
+
+Clips Kitty uploads to one channel (Roasted Clipz). Streamers whose entry in `streamers.yaml` has `youtube_channel: cutscene_skipped` go to the channel of that name in `config.yaml → publish.channels` instead (the Twitch streamers go to Cutscene Skipped). The program uploads those itself, with the same rules: only approved clips, always private with a scheduled time, credit checked first. Each channel has its own time slots. The review page shows where each clip goes.
+
+Set it up once:
+
+1. Create the channel under your Google login (YouTube → profile picture → Settings → Add or manage your channel(s) → Create a channel).
+2. In the Google Cloud console, open the project you made for Clips Kitty → APIs & Services → Credentials → your OAuth client (Desktop app) → **Download JSON**. Save it as `secrets\youtube_client.json` in this folder (git ignores `secrets\`).
+3. Sign in once and pick the new channel in Google's account picker:
+
+```powershell
+.venv\Scripts\python.exe -m gta6clips connect-youtube cutscene_skipped
+```
+
+It checks that the channel you picked has the handle in `config.yaml` (`@CutsceneSkipped`) and refuses any other. The sign-in is kept in `secrets\`, encrypted with Windows so only your Windows account on this PC can read it. Restart `review` and `watch` afterwards. Both channels share your project's 100 uploads a day.
+
 ## Phone notifications (Discord)
 
 The program can ping you on Discord when a clip is ready for review (or held as a spoiler), when a stream starts or stops recording, when an upload goes through (with its YouTube link and time), and when something goes wrong (recording failing, a YouTube block, a failed render; the same problem at most every 30 minutes).
@@ -258,8 +304,21 @@ Edit `streamers.yaml`. Each entry needs:
 | `permission_source` | Where that permission came from, for your records |
 | `credit` | The line added to every description |
 | `priority` | 1 is highest. Decides which streams get recorded first when several are live. |
+| `hold_uploads_while_live` | Optional, `true` or `false`. With `true`, none of this streamer's clips is uploaded to YouTube while they're live (checked on Twitch). Approving one while they're live keeps it approved, and `watch` uploads it into the next free slot once they're offline (checked every 10 minutes). If their live status can't be checked, the clip waits too. |
 
-## Twitch API credentials (needed from Phase 3, for Twitch streamers)
+A Twitch streamer, for example:
+
+```yaml
+  - name: Kai Racer
+    platform: twitch
+    channel_url: https://www.twitch.tv/kairacer
+    permission: true
+    permission_source: "Their clipping rules on <link>, checked 2026-11-20"
+    credit: "🎥 Clip from Kai Racer: https://www.twitch.tv/kairacer"
+    priority: 2
+```
+
+## Twitch API credentials (for Twitch streamers' top clips)
 
 1. Go to https://dev.twitch.tv/console and log in with your Twitch account. Twitch requires two-factor authentication to be on.
 2. Click **Register Your Application**.

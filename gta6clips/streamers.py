@@ -41,6 +41,8 @@ class Streamer:
     permission_source: str = ""
     keys: frozenset[str] = field(default=frozenset(), compare=False)
     clipskitty_creator_override: str = ""
+    hold_uploads_while_live: bool = False   # their clips go to YouTube only while they're offline
+    youtube_channel: str = ""               # a key of config.yaml publish.channels; "" = Clips Kitty's channel
 
     @property
     def clipskitty_creator(self) -> str:
@@ -63,7 +65,9 @@ class Streamer:
     @property
     def hashtag(self) -> str:
         """#TheBurntPeanut for "The Burnt Peanut"."""
-        joined = "".join(word[:1].upper() + word[1:] for word in self.name.split())
+        words = self.name.split()
+        # One word keeps its own capitals (xQc); several are joined in CamelCase.
+        joined = words[0] if len(words) == 1 else "".join(w[:1].upper() + w[1:] for w in words)
         return "#" + re.sub(r"[^0-9A-Za-z_]", "", joined)
 
 
@@ -119,6 +123,9 @@ def _entry_to_streamer(entry: dict, index: int) -> Streamer:
     keys = channel_keys(platform, channel_url, entry.get("channel_id"))
     if not keys:
         raise StreamerFileError(f"{where} ({name}): can't read a channel from channel_url {channel_url!r}")
+    hold = entry.get("hold_uploads_while_live", False)
+    if not isinstance(hold, bool):
+        raise StreamerFileError(f"{where} ({name}): hold_uploads_while_live must be true or false without quotes")
     try:
         priority = int(entry.get("priority", 100))
     except (TypeError, ValueError) as exc:
@@ -133,6 +140,8 @@ def _entry_to_streamer(entry: dict, index: int) -> Streamer:
         permission_source=str(entry.get("permission_source") or ""),
         keys=frozenset(keys),
         clipskitty_creator_override=str(entry.get("clipskitty_creator") or "").strip(),
+        hold_uploads_while_live=hold,
+        youtube_channel=str(entry.get("youtube_channel") or "").strip(),
     )
 
 

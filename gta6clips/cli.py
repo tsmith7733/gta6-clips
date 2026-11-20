@@ -58,6 +58,10 @@ def _parser() -> argparse.ArgumentParser:
     watch.add_argument("--allow-non-gta", action="store_true",
                        help="record a permitted streamer even when the stream title doesn't mention GTA 6")
 
+    tc = sub.add_parser("twitch-clips", help="queue the most-viewed GTA 6 Twitch clips of permitted streamers "
+                                             "(the running watcher sends them to Clips Kitty)")
+    tc.add_argument("--dry-run", action="store_true", help="list what would be queued; download nothing")
+
     review = sub.add_parser("review", help="open the review page: watch clips, pick titles, approve or reject "
                                            "(Phase 4)")
     review.add_argument("--port", type=int, help="override review.port in config.yaml")
@@ -66,6 +70,13 @@ def _parser() -> argparse.ArgumentParser:
     pub = sub.add_parser("publish", help="schedule approved clips on YouTube through Clips Kitty (Phase 5)")
     pub.add_argument("--yes", action="store_true", help="upload the plan (without it, only show the plan)")
     pub.add_argument("--clip", type=int, action="append", help="only this clip (repeatable)")
+
+    sub.add_parser("install-plugin", help="install or update our exact-moments plugin (plugins/exact-moments) "
+                                          "in the Clips Kitty running on this PC")
+
+    cy = sub.add_parser("connect-youtube", help="sign in once to a YouTube channel listed in config.yaml "
+                                                "publish.channels (a second channel, besides Clips Kitty's)")
+    cy.add_argument("channel", help="its key in publish.channels, e.g. cutscene_skipped")
 
     sub.add_parser("notify-test", help="send a test notification to Discord (DISCORD_WEBHOOK_URL in .env)")
 
@@ -134,6 +145,10 @@ def main(argv: list[str] | None = None) -> int:
         conn = db.connect(cfg.path("paths.database"))
         client = ClipsKittyClient(cfg.require("clipskitty.url"))
 
+        if args.command == "install-plugin":
+            return _install_plugin(cfg, client)
+        if args.command == "connect-youtube":
+            return _connect_youtube(cfg, args)
         if args.command == "check":
             return _check(cfg, client, streamers)
         if args.command == "clips":
@@ -161,6 +176,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "watch":
             return _watch(cfg, client, conn, streamers, writer, args)
+        if args.command == "twitch-clips":
+            return _twitch_clips(cfg, conn, streamers, args)
         if args.command == "vod":
             result = run_vod(args.url, cfg=cfg, client=client, conn=conn, streamers=streamers,
                              writer=writer, wait=not args.no_wait, force=args.force,
@@ -259,7 +276,8 @@ def _list_clips(conn, status: str) -> int:
 def _publish(cfg, client, conn, streamers, args) -> int:
     from .publish.service import PublishService
 
-    pub = PublishService(conn=conn, client=client, streamers=streamers, cfg=cfg)
+    pub = PublishService(conn=conn, client=client, streamers=streamers, cfg=cfg, is_live=_live_check(streamers),
+                         uploaders=_uploaders(cfg))
     for change in pub.refresh(force=True):
         print(f"  clip {change['clip_id']}: upload {change['state']}")
     plan = pub.plan(args.clip)
@@ -279,7 +297,7 @@ def _publish(cfg, client, conn, streamers, args) -> int:
         return 0
     print("Plan (each uploads private now; YouTube publishes it at its slot):")
     for i in plan.items:
-        print(f"  {i.when}  [{i.clip_id}] {i.title}")
+        print(f"  {i.when}  [{i.clip_id}] {i.title}  → {i.channel}")
     if not args.yes:
         print("\nNothing uploaded. Run again with --yes to upload this plan.")
         return 0
@@ -306,7 +324,8 @@ def _review(cfg, client, streamers, args) -> int:
 
     shared = db.connect(cfg.path("paths.database"), threads=True)
     service = ReviewService(conn=shared, client=client, streamers=streamers)
-    publisher = PublishService(conn=shared, client=client, streamers=streamers, cfg=cfg)
+    publisher = PublishService(conn=shared, client=client, streamers=streamers, cfg=cfg,
+                               is_live=_live_check(streamers), uploaders=_uploaders(cfg))
     url = f"http://127.0.0.1:{port}/"
     print(f"Review page: {url}  (Ctrl+C stops it; nothing is published from it)")
     if not args.no_browser:
@@ -316,13 +335,144 @@ def _review(cfg, client, streamers, args) -> int:
     return 0
 
 
+def _clip_source(cfg, conn, streamers, *, required: bool):
+    from .twitch import Helix, TwitchSetupError
+    from .twitch_clips import TwitchClipSource, twitch_streamers
+
+    if not required and (cfg.get("twitch_clips.enabled", True) is False or not twitch_streamers(streamers)):
+        return None
+    try:
+        helix = Helix.from_env()
+    except TwitchSetupError as exc:
+        if required:
+            raise
+        log.warning("Twitch clips are off: %s", exc)
+        return None
+    windows = cfg.get("windows", {}) or {}
+    fetcher = YtDlpFetcher(ffmpeg=find_ffmpeg(cfg), cache_dir=cfg.path("paths.cache"),
+                           video_format=str(windows.get("video_format", "b")))
+    return TwitchClipSource(cfg=cfg, conn=conn, helix=helix, streamers=streamers, fetcher=fetcher,
+                            windows_dir=cfg.path("paths.windows"))
+
+
+def _secrets_dir(cfg):
+    from pathlib import Path
+    p = Path(str(cfg.get("paths.secrets") or "secrets"))
+    return p if p.is_absolute() else cfg.base_dir / p
+
+
+def _uploaders(cfg):
+    from .publish.youtube_direct import make_uploaders
+    return make_uploaders(cfg, _secrets_dir(cfg))
+
+
+def _install_plugin(cfg, client) -> int:
+    import glob
+    import os
+    from pathlib import Path
+
+    folder = (cfg.base_dir / "plugins" / "exact-moments").resolve()
+    found = glob.glob(os.path.expandvars(r"%LOCALAPPDATA%\Packages") +
+                      r"\ClipsStudio.ClipsStudio_*\LocalCache\Local\Clips Studio\data\plugins\session.secret")
+    found += [os.path.expandvars(r"%LOCALAPPDATA%\Clips Studio\data\plugins\session.secret")]
+    secret_file = next((Path(f) for f in found if Path(f).is_file()), None)
+    if secret_file is None:
+        print("Couldn't find Clips Kitty's session.secret. Is Clips Kitty open?", file=sys.stderr)
+        return 2
+    plan = client.plan_plugin(str(folder), secret_file.read_text(encoding="utf-8").strip())
+    details = plan.get("details") or {}
+    print("Clips Kitty's install screen:")
+    for p in details.get("permissions") or []:
+        print(f"  permission: {p.get('label')}")
+    print(f"  network: {details.get('network') or 'none'}; steps: {', '.join(details.get('steps') or [])}")
+    for w in (plan.get("warnings") or []) + (plan.get("problems") or []):
+        print(f"  ! {w}")
+    if plan.get("problems"):
+        return 1
+    installed = client.install_plugin(plan["plan_id"], secret_file.read_text(encoding="utf-8").strip())
+    print(f"Installed {installed.get('id')} {installed.get('version')}.")
+    return 0
+
+
+def _connect_youtube(cfg, args) -> int:
+    from .publish.youtube_direct import (OAuthClient, TokenStore, YouTubeError, channel_settings,
+                                         connect)
+
+    channels = channel_settings(cfg)
+    if args.channel not in channels:
+        print(f"No channel {args.channel!r} in config.yaml publish.channels (have: {', '.join(channels) or 'none'})",
+              file=sys.stderr)
+        return 2
+    secrets_dir = _secrets_dir(cfg)
+    try:
+        oauth = OAuthClient.from_file(secrets_dir / "youtube_client.json")
+        channel = connect(channels[args.channel], oauth, TokenStore(secrets_dir))
+    except YouTubeError as exc:
+        print(exc, file=sys.stderr)
+        return 2 if "client file" in str(exc) else 1
+    print(f"Connected to {channel['title']} ({channel['handle']}). Its sign-in is saved encrypted in "
+          f"{secrets_dir}.")
+    return 0
+
+
+def _live_check(streamers):
+    """Twitch live status for streamers marked hold_uploads_while_live (None without Twitch keys)."""
+    if not any(s.hold_uploads_while_live for s in streamers):
+        return None
+    from .twitch import Helix, TwitchLiveCheck, TwitchSetupError
+    try:
+        return TwitchLiveCheck(Helix.from_env())
+    except TwitchSetupError as exc:
+        log.warning("Clips of streamers marked hold_uploads_while_live wait: %s", exc)
+        return None
+
+
+def _twitch_clips(cfg, conn, streamers, args) -> int:
+    from .twitch import HelixError, TwitchSetupError
+
+    try:
+        source = _clip_source(cfg, conn, streamers, required=True)
+        run = source.run_once(dry_run=args.dry_run)
+    except TwitchSetupError as exc:
+        print(exc, file=sys.stderr)
+        return 2
+    except HelixError as exc:
+        print(f"Twitch: {exc}", file=sys.stderr)
+        return 1
+    for p in run.picks:
+        how = "from the VOD" if p.from_vod else "clip only"
+        print(f"  {p.views:>6} views  {p.streamer.name}: {p.clip.get('title')!r} ({how}, "
+              f"{p.end_s - p.start_s:.0f} s)")
+    for line in run.skipped:
+        print(f"  skipped: {line}")
+    if args.dry_run:
+        print("\nDry run: nothing downloaded or queued.")
+    elif run.queued:
+        print(f"\nQueued {len(run.queued)} clip(s). The running watcher sends them to Clips Kitty "
+              "(start it with 'watch' if it isn't running).")
+    else:
+        print("\nNothing new to queue.")
+    return 0
+
+
+def _held_publisher(cfg, client, conn, streamers):
+    """With publish.auto_schedule, the watcher uploads clips held while their streamer was live."""
+    if cfg.get("publish.auto_schedule", False) is not True or not any(s.hold_uploads_while_live for s in streamers):
+        return None
+    from .publish.service import PublishService
+    return PublishService(conn=conn, client=client, streamers=streamers, cfg=cfg, is_live=_live_check(streamers),
+                          uploaders=_uploaders(cfg))
+
+
 def _watch(cfg, client, conn, streamers, writer, args) -> int:
     from .live.factory import find_ytdlp, session_factory
     from .live.watcher import Watcher
 
     make = session_factory(cfg, conn, ffmpeg=find_ffmpeg(cfg), ytdlp=find_ytdlp())
     watcher = Watcher(cfg=cfg, client=client, conn=conn, streamers=streamers, writer=writer, make_session=make,
-                      allow_non_gta=args.allow_non_gta)
+                      allow_non_gta=args.allow_non_gta,
+                      clip_source=_clip_source(cfg, conn, streamers, required=False),
+                      publisher=_held_publisher(cfg, client, conn, streamers))
     watcher.run(stop_after_s=args.minutes * 60 if args.minutes else None)
     print("\nStopped watching. Nothing is published. Review the clips with: python -m gta6clips clips")
     return 0

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+from dataclasses import dataclass
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -16,9 +17,10 @@ from pathlib import Path
 from typing import Callable
 
 from .. import db, notify
-from ..clipskitty import ClipsKittyClient, ClipsKittyError, QueueFull
+from ..clipskitty import ClipsKittyClient, ClipsKittyError, JobRefused, QueueFull
 from ..clipskitty.readiness import check_readiness
 from ..config import Config
+from ..exact import ExactSettings
 from ..llm import TitleWriter
 from ..postprocess import postprocess_video
 from ..scan import SPOILER_CHAT_MARGIN_S, window_job_options
@@ -29,6 +31,43 @@ from ..vod import _failure_text, _streamer_named
 log = logging.getLogger(__name__)
 
 READINESS_EVERY_S = 600.0
+QA_WIDEN_TIMES = 1          # a window is sent back wider at most this often
+MIN_WINDOW_BYTES = 10_000    # a cut smaller than this came out empty (bad ones were 261 bytes)
+
+
+@dataclass(frozen=True)
+class QualitySettings:
+    enabled: bool = True
+    min_s: float = 30.0
+    edge_s: float = 1.5
+    widen_s: float = 15.0
+    require_split: bool = True
+
+    @classmethod
+    def from_config(cls, cfg: Config) -> "QualitySettings":
+        s = cfg.get("qa", {}) or {}
+        d = cls()
+        return cls(enabled=s.get("enabled", d.enabled) is True, min_s=float(s.get("min_seconds", d.min_s)),
+                   edge_s=float(s.get("edge_seconds", d.edge_s)), widen_s=float(s.get("widen_seconds", d.widen_s)),
+                   require_split=s.get("require_split", d.require_split) is True)
+
+
+def quality_problems(clip: dict, file_s: float, q: QualitySettings, *, check_edges: bool = True
+                     ) -> tuple[list[str], bool]:
+    """What's wrong with a clip Clips Kitty made, and whether a wider range could fix it. `check_edges`
+    is off for a Twitch clip used as it is (no VOD): the clip itself is the whole recording."""
+    problems, widen = [], False
+    start, end = float(clip.get("start_s") or 0), float(clip.get("end_s") or 0)
+    if end - start < q.min_s:
+        problems.append(f"only {end - start:.0f} s long, too short to show the whole story")
+        widen = True
+    if check_edges and file_s and (start <= q.edge_s or end >= file_s - q.edge_s):
+        problems.append("cut off at the " + ("start" if start <= q.edge_s else "end") + " of its recording")
+        widen = True
+    gaming = (clip.get("render_opts") or {}).get("gaming") or {}
+    if q.require_split and gaming and gaming.get("layout") != "split":
+        problems.append("no split screen: Clips Kitty didn't find the streamer's webcam")
+    return problems, widen
 
 
 def clipskitty_finder_options(options: dict) -> dict:
@@ -49,6 +88,8 @@ class Dispatcher:
         self.writer = writer
         self.clock = clock
         self.spoilers = KeywordSpoilerCheck.from_config(cfg)
+        self.exact = ExactSettings.from_config(cfg)
+        self.qa = QualitySettings.from_config(cfg)
         self._ready_checked = 0.0
         self._ready = True
         self._queue_full_until = 0.0
@@ -92,17 +133,30 @@ class Dispatcher:
             path = Path(row["local_path"]) if row["local_path"] else None
             if path is None or not path.is_file():
                 continue  # still being cut, or the cut failed (then it's marked failed)
+            if path.stat().st_size < MIN_WINDOW_BYTES:
+                db.update_window(self.conn, row["id"], state="failed", error="the cut came out empty")
+                log.error("Window %s's file is empty (%s), so it isn't sent.", row["id"], path.name)
+                continue
             try:
                 streamer = _streamer_named(self.streamers, row["streamer"])   # the permission gate again
             except PermissionDenied as exc:
                 db.update_window(self.conn, row["id"], state="failed", error=str(exc))
                 log.error("%s", exc)
                 continue
-            started = datetime.fromtimestamp(row["start_utc"] or 0, timezone.utc).strftime("%H:%M")
-            title = f"{row['source_title']} [live {started} UTC]"[:100]
+            if str(row["stream_video_id"]).endswith("@clips"):
+                title = f"{row['source_title']} [Twitch clip]"[:100]
+            else:
+                started = datetime.fromtimestamp(row["start_utc"] or 0, timezone.utc).strftime("%H:%M")
+                title = f"{row['source_title']} [live {started} UTC]"[:100]
             options = window_job_options(self.cfg, streamer)
             if row["finder"] == "clipskitty":
                 options = clipskitty_finder_options(options)
+            if row["focus"]:
+                options["focus"] = " ".join(str(row["focus"]).split())[:600]   # Clips Kitty's limit
+            if row["finder"] == "exact" and row["moment_start_s"] is not None and self.exact.enabled:
+                options["pipeline"] = self.exact.pipeline(float(row["moment_start_s"]), float(row["moment_end_s"]))
+                options["max_clips"] = 1
+                options.pop("force", None)
             try:
                 submitted = self.client.submit_local(str(path.resolve()), title=title,
                                                      channel=streamer.clipskitty_creator, options=options)
@@ -110,6 +164,10 @@ class Dispatcher:
                 log.info("Clips Kitty's queue is full; the next windows wait a few minutes.")
                 self._queue_full_until = self.clock() + 180
                 return
+            except JobRefused as exc:   # this window only: the others still go
+                db.update_window(self.conn, row["id"], state="failed", error=f"Clips Kitty refused it: {exc}"[:2000])
+                log.error("Clips Kitty refused window %s: %s", row["id"], exc)
+                continue
             job_id = submitted.job_id or submitted.queued_job_id
             if submitted.already_processed and submitted.video_id:
                 db.update_window(self.conn, row["id"], state="done", ck_video_id=submitted.video_id)
@@ -151,6 +209,58 @@ class Dispatcher:
                          render_retries=tries + 1, not_before=self.clock() + wait_s)
         log.info("Clips Kitty's render failed for window %s; sending it again in %.0f min (try %d of %d).",
                  row["id"], wait_s / 60, tries + 1, limit)
+        return True
+
+    def _check_quality(self, row: sqlite3.Row, video_id: str, outcomes: list) -> list:
+        """The check every new clip gets before the review page. Returns the outcomes, with the status
+        each ended up in. A clip that's too short or cut off is sent back once with a wider range (the
+        window goes back to 'planned'; the caller sees that from the database)."""
+        fresh = [o for o in outcomes if not o.skipped and o.status in ("pending_review", "spoiler_hold")]
+        if not self.qa.enabled or not fresh:
+            return outcomes
+        try:
+            theirs = {c["id"]: c for c in self.client.video_clips(video_id)}
+        except ClipsKittyError as exc:
+            log.warning("Couldn't check window %s's clips: %s", row["id"], exc)
+            return outcomes
+        file_s = float((row["offset_end_s"] or 0) - (row["offset_start_s"] or 0))
+        for o in fresh:
+            clip = theirs.get(o.ck_clip_id)
+            if clip is None:
+                continue
+            problems, widen = quality_problems(clip, file_s, self.qa,
+                                               check_edges="clip only" not in (row["reasons"] or ""))
+            if not problems:
+                continue
+            why = "; ".join(problems)
+            if widen and self._send_wider(row, clip, file_s, why):
+                db.set_clip_status(self.conn, o.ck_clip_id, "rejected",
+                                   note=f"quality check: {why}. Sent back to Clips Kitty with a wider range; "
+                                        "the new clip replaces this one")
+                o.status = "rejected"
+                continue
+            db.set_clip_status(self.conn, o.ck_clip_id, "needs_fix", note=f"quality check: {why}")
+            o.status = "needs_fix"
+        return outcomes
+
+    def _send_wider(self, row: sqlite3.Row, clip: dict, file_s: float, why: str) -> bool:
+        """Queues the window again for one clip covering the old one plus widen_s each side, when the
+        recording has that room and it hasn't been widened already."""
+        if int(row["widened"] or 0) >= QA_WIDEN_TIMES or not self.exact.enabled or file_s <= 0:
+            return False
+        src = Path(row["local_path"]) if row["local_path"] else None
+        if src is None or not src.is_file():
+            return False
+        start = max(0.0, float(clip["start_s"]) - self.qa.widen_s)
+        end = min(file_s, float(clip["end_s"]) + self.qa.widen_s)
+        if (end - start) - (float(clip["end_s"]) - float(clip["start_s"])) < 5:
+            return False   # no room left in the recording
+        n = int(row["widened"] or 0) + 1
+        dest = src.with_name(f"{src.stem.split('_wide')[0]}_wide{n}{src.suffix}")   # a new video for Clips Kitty
+        shutil.copy2(src, dest)
+        db.update_window(self.conn, row["id"], state="planned", ck_job_id=None, local_path=str(dest), finder="exact",
+                         moment_start_s=start, moment_end_s=end, widened=n, not_before=None)
+        log.info("Window %s's clip was %s; sending it again as %.0f-%.0f s.", row["id"], why, start, end)
         return True
 
     def _retry_with_clipskitty_finder(self, row: sqlite3.Row) -> bool:
@@ -204,10 +314,14 @@ class Dispatcher:
                         continue
                 elif self._retry_with_clipskitty_finder(row):
                     continue
-            db.update_window(self.conn, row["id"], state="collected")
-            self.collected.append(row["id"])
+            outcomes = self._check_quality(row, video_id, outcomes)
+            sent_back = self.conn.execute("SELECT state FROM windows WHERE id = ?", (row["id"],)).fetchone()[0] \
+                == "planned"
+            if not sent_back:
+                db.update_window(self.conn, row["id"], state="collected")
+                self.collected.append(row["id"])
             for o in outcomes:
-                if not o.skipped:
+                if not o.skipped and o.status != "rejected":
                     log.info("Clip %s ready for review (%s): %s", o.ck_clip_id, o.status, o.title)
                     clip = db.get_clip(self.conn, o.ck_clip_id)
                     seconds = (clip["end_s"] or 0) - (clip["start_s"] or 0) if clip else None
