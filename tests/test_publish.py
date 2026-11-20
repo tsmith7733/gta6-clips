@@ -189,3 +189,36 @@ def test_page_plans_uploads_and_shows_the_upload(page, ck_state, conn):
     clips = page.get("/api/clips?status=published").json()["clips"]
     assert clips[0]["upload"]["state"] == "uploaded" and clips[0]["upload"]["url"].endswith("yt00000801")
     assert page.post("/api/publish/execute", json={"items": []}).status_code == 400
+
+
+@pytest.fixture
+def auto_page(workdir, ck, streamers, cfg):
+    shared = db.connect(workdir / "data" / "orchestrator.db", threads=True)
+    review = ReviewService(conn=shared, client=ck, streamers=streamers)
+    publisher = PublishService(conn=shared, client=ck, streamers=streamers, cfg=cfg, now=lambda: NOW)
+    yield TestClient(create_app(review, ck, publisher, auto_schedule=True), base_url="http://127.0.0.1:8770")
+    shared.close()
+
+
+def test_approving_schedules_the_clip_in_the_next_free_slot(auto_page, ck_state, conn):
+    _approved(ck_state, conn, 801)
+    auto_page.post("/api/publish/execute", json={"items": [
+        {"clip_id": 801, "publish_at": "2026-11-19T20:00:00-06:00"}]})       # tonight's slot is taken
+    _clip(ck_state, conn, 802, start=300, end=330)
+    r = auto_page.post("/api/clips/802/approve", json={"title": "Lady, It's A Robbery"}).json()
+    assert r["status"] == "approved" and r["scheduled"]["publish_at"] == "2026-11-20T15:00:00-06:00"
+    clip_id, body = ck_state.publishes[-1]
+    assert clip_id == 802 and body["privacy"] == "private" and body["title"] == "Lady, It's A Robbery"
+
+
+def test_approval_stands_when_the_clip_cant_be_scheduled(auto_page, ck_state, conn):
+    ck_state.youtube_enabled = False
+    _clip(ck_state, conn, 801)
+    r = auto_page.post("/api/clips/801/approve", json={"title": "Soccer Practice Rush!"}).json()
+    assert r["status"] == "approved" and "Publish to YouTube" in r["not_scheduled"] and not ck_state.publishes
+
+
+def test_approving_without_auto_schedule_uploads_nothing(page, ck_state, conn):
+    _clip(ck_state, conn, 801)
+    r = page.post("/api/clips/801/approve", json={"title": "Soccer Practice Rush!"}).json()
+    assert r["status"] == "approved" and "scheduled" not in r and not ck_state.publishes

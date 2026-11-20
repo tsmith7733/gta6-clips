@@ -311,7 +311,8 @@ def _review(cfg, client, streamers, args) -> int:
     print(f"Review page: {url}  (Ctrl+C stops it; nothing is published from it)")
     if not args.no_browser:
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()
-    serve(service, client, port=port, publisher=publisher)
+    serve(service, client, port=port, publisher=publisher,
+          auto_schedule=cfg.get("publish.auto_schedule", False) is True)
     return 0
 
 

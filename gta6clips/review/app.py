@@ -24,7 +24,8 @@ log = logging.getLogger(__name__)
 LOOPBACK = ("127.0.0.1", "localhost")
 
 
-def create_app(service: ReviewService, client: ClipsKittyClient, publisher: PublishService | None = None) -> FastAPI:
+def create_app(service: ReviewService, client: ClipsKittyClient, publisher: PublishService | None = None,
+               *, auto_schedule: bool = False) -> FastAPI:
     app = FastAPI(title="GTA 6 clips review", docs_url=None, redoc_url=None, openapi_url=None)
     lock = threading.Lock()          # one sqlite connection, shared by the worker threads
     page = resources.files(__package__).joinpath("page.html").read_text(encoding="utf-8")
@@ -103,8 +104,16 @@ def create_app(service: ReviewService, client: ClipsKittyClient, publisher: Publ
 
     @app.post("/api/clips/{clip_id}/approve")
     def approve(clip_id: int, body: dict = Body(...)):
-        return run(lambda: service.approve(clip_id, str(body.get("title", "")),
-                                           confirm_spoiler=body.get("confirm_spoiler") is True).as_dict())
+        def go():
+            card = service.approve(clip_id, str(body.get("title", "")),
+                                   confirm_spoiler=body.get("confirm_spoiler") is True).as_dict()
+            if publisher is not None and auto_schedule:
+                try:
+                    card.update(publisher.schedule_one(clip_id))
+                except (ReviewError, ClipsKittyError) as exc:   # the approval stands either way
+                    card["not_scheduled"] = str(exc)
+            return card
+        return run(go)
 
     @app.post("/api/clips/{clip_id}/reject")
     def reject(clip_id: int, body: dict = Body(default={})):
@@ -126,7 +135,7 @@ def create_app(service: ReviewService, client: ClipsKittyClient, publisher: Publ
 
 
 def serve(service: ReviewService, client: ClipsKittyClient, *, port: int,
-          publisher: PublishService | None = None) -> None:
+          publisher: PublishService | None = None, auto_schedule: bool = False) -> None:
     import uvicorn
 
-    uvicorn.run(create_app(service, client, publisher), host="127.0.0.1", port=port, log_level="warning")
+    uvicorn.run(create_app(service, client, publisher, auto_schedule=auto_schedule), host="127.0.0.1", port=port, log_level="warning")

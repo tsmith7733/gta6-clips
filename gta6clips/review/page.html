@@ -85,7 +85,7 @@
 </head>
 <body>
 <header>
-  <h1>Clip review <small>Approved clips are scheduled on YouTube from the Approved tab, private until their time slot.</small></h1>
+  <h1>Clip review <small>Approving a clip schedules it on YouTube in the next free time slot (private until then).</small></h1>
   <nav id="tabs"></nav>
 </header>
 <main id="list"></main>
@@ -212,7 +212,9 @@ async function act(el, what, button) {
   el.querySelectorAll("button").forEach(b => b.disabled = true);
   try {
     const c = await api(`/api/clips/${id}/${what}`, body);
-    toast({approve: `Approved: ${c.title}`, reject: "Rejected", undo: "Moved back", title: "Title saved"}[what]);
+    if (what === "approve" && c.scheduled) toast(`Approved and scheduled for ${c.scheduled.when}: ${c.title}`);
+    else if (what === "approve" && c.not_scheduled) toast(`Approved, but not scheduled: ${c.not_scheduled}`, true);
+    else toast({approve: `Approved: ${c.title}`, reject: "Rejected", undo: "Moved back", title: "Title saved"}[what]);
     await load();
   } catch (err) {
     toast(err.message, true);

@@ -185,6 +185,23 @@ class PublishService:
     def _clips_kitty_clip(self, row: sqlite3.Row) -> dict | None:
         return next((c for c in self.client.video_clips(row["ck_video_id"]) if c["id"] == row["ck_clip_id"]), None)
 
+    def schedule_one(self, clip_id: int) -> dict:
+        """Upload one just-approved clip into the next free slot (private until then).
+
+        Returns {"scheduled": {...}} or {"not_scheduled": reason}; never raises for the
+        ordinary reasons (YouTube off, quota, a check failing), so an approval always stands.
+        """
+        plan = self.plan([clip_id])
+        if not plan.status.ok:
+            return {"not_scheduled": " ".join(plan.status.problems)}
+        if not plan.items:
+            reason = next((s["reason"] for s in plan.skipped if s["clip_id"] == clip_id), "no free slot found")
+            return {"not_scheduled": reason}
+        result = self.execute([plan.items[0].as_dict()])
+        if result["started"]:
+            return {"scheduled": result["started"][0]}
+        return {"not_scheduled": result["skipped"][0]["reason"] if result["skipped"] else "it wasn't uploaded"}
+
     # -- uploading -----------------------------------------------------------------------
     def execute(self, items: list[dict]) -> dict:
         """Upload each planned item. Everything is re-checked: the plan came from a browser."""

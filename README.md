@@ -202,7 +202,7 @@ Opens a page in your browser at `http://127.0.0.1:8770` (change the port with `r
 - **Spoilers**: clips held as possible spoilers. To approve one, tick **Not a spoiler** first. Undoing a decision on a spoiler puts it back here, never in the main list.
 - **Approved** and **Rejected**: change a title, or undo the decision.
 
-Approving writes the chosen title to Clips Kitty and checks that the clip's description there still has the streamer's credit; it refuses if the credit was removed. Approved clips are scheduled on YouTube from the Approved tab (Phase 5, below).
+Approving writes the chosen title to Clips Kitty and checks that the clip's description there still has the streamer's credit; it refuses if the credit was removed. With `publish.auto_schedule: true` (the default), approving also uploads the clip at once into the next free time slot, private until then; if it can't be scheduled (YouTube off, quota, a failed check) the clip stays approved and the page says why. Otherwise approved clips are scheduled from the Approved tab (Phase 5, below).
 
 Fine edits (framing, captions, trimming) happen in the Clips Kitty studio. When you re-render a clip there, Clips Kitty gives it a new number; the page notices and follows it, keeping your decision. The list refreshes itself every 30 seconds while `watch` adds clips.
 

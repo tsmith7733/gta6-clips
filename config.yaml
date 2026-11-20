@@ -140,6 +140,9 @@ publish:
   slots:
     weekdays: ["15:00", "20:00"]
     weekends: ["12:00", "15:00", "20:00"]
+  # Approving a clip on the review page uploads it right away into the next free slot (private
+  # until then). false: approved clips wait for the Approved tab's "Plan the uploads" button.
+  auto_schedule: true
   min_lead_minutes: 20         # a slot sooner than this is skipped (YouTube needs at least 15)
   category_id: "20"            # Gaming
   made_for_kids: false
