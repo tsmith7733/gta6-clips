@@ -35,14 +35,13 @@ clipskitty:
     captions: true
     max_clips: 8           # per video in Phase 1 (a whole VOD); live windows will use 1-2
     focus: >-
-      Funny and viral GTA 6 moments: the streamer's out-of-pocket one-liners
-      and roasts, trolling NPCs, cops or friends, absurd commentary, rage and
-      crash-outs, dumb plans going wrong, chaotic physics and ragdolls, police
-      chases that escalate, funny NPC interactions, glitches, insane stunts or
-      crashes. Prefer a joke with its punchline and the laugh over plain action.
-      Start on the action or the setup line within the first 2 seconds, keep it
-      15-35 seconds, and end right after the payoff and the streamer's reaction;
-      skip slow setup.
+      Funny and viral GTA 6 moments from the streamer: his out-of-pocket
+      one-liners and roasts, trolling NPCs, cops or friends, absurd commentary,
+      rage and crash-outs, dumb plans going wrong, chaotic physics, escalating
+      police chases, glitches, insane stunts or crashes. Prefer a joke with its
+      punchline and the laugh over plain action. Skip story cutscenes and
+      dialogue between game characters. Start on the setup within 2 seconds,
+      keep it 15-35 seconds, end right after the payoff and his reaction.
   # How often to ask Clips Kitty whether a job is finished, and for how long.
   poll_seconds: 30
   job_timeout_hours: 6
