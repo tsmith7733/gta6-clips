@@ -286,3 +286,13 @@ def test_a_refused_window_is_failed_and_the_rest_still_go(cfg, conn, twitch_stre
     state = conn.execute("SELECT state FROM windows WHERE id = ?", (first["id"],)).fetchone()["state"]
     assert state == "failed"
     assert [w["id"] for w in db.live_windows(conn, ("submitted",))] == [second["id"]]
+
+
+def test_a_muted_vod_cut_falls_back_to_the_clip(cfg, conn, twitch_streamers, workdir):
+    fetcher = FakeFetcher()
+    src = make_source(cfg, conn, twitch_streamers, FakeTwitch({"id_kairacer": [clip("a", 500)]}), workdir, fetcher)
+    src.silent = lambda path, s, e: s + 10 if "videos" in str(path) or "555" in str(path) else None
+    src.run_once()
+    row = db.live_windows(conn, ("planned",))[0]
+    assert fetcher.cuts[-1][0] == "https://clips.twitch.tv/a" and "clip only" in row["reasons"]
+    assert not list((workdir / "windows").glob("twitch_555_*"))       # the silent cut is deleted

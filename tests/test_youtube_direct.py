@@ -174,3 +174,29 @@ def test_without_the_client_file_the_reason_says_how_to_get_it(conn, ck, ck_stat
     _kai_clip(ck_state, conn, 802)
     db.set_clip_status(conn, 802, "approved", note="approved")
     assert "Download JSON" in pub.plan().skipped[0]["reason"]
+
+
+def test_review_page_shows_each_channels_clips_apart(conn, ck, ck_state, cfg, routed, workdir):
+    from fastapi.testclient import TestClient
+
+    from gta6clips.review.app import create_app
+    from gta6clips.review.service import ReviewService
+
+    shared = db.connect(workdir / "data" / "orchestrator.db", threads=True)
+    try:
+        review = ReviewService(conn=shared, client=ck, streamers=routed)
+        pub = _service(shared, ck, cfg, routed, workdir, FakeGoogle())
+        page = TestClient(create_app(review, ck, pub), base_url="http://127.0.0.1:8770")
+        _clip(ck_state, conn, 801)                     # The Burnt Peanut -> Clips Kitty's channel
+        _kai_clip(ck_state, conn, 802)                 # Kai Racer -> Cutscene Skipped
+        channels = page.get("/api/channels").json()["channels"]
+        assert channels == [{"key": "", "title": "GTA Clips"},
+                            {"key": "cutscene_skipped", "title": "Cutscene Skipped"}]
+        main = page.get("/api/clips?status=pending_review&channel=").json()
+        second = page.get("/api/clips?status=pending_review&channel=cutscene_skipped").json()
+        both = page.get("/api/clips?status=pending_review").json()
+        assert [c["id"] for c in main["clips"]] == [801] and main["counts"]["pending_review"] == 1
+        assert [c["id"] for c in second["clips"]] == [802] and second["clips"][0]["channel"] == "Cutscene Skipped"
+        assert both["counts"]["pending_review"] == 2
+    finally:
+        shared.close()

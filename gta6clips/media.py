@@ -108,3 +108,30 @@ def measure_loudness(ffmpeg: Path, media: Path, bin_s: float) -> list[float]:
     if code != 0 or not samples:
         raise RuntimeError(f"ffmpeg couldn't measure {media.name} (exit {code}):\n" + "\n".join(tail))
     return bin_loudness(samples, bin_s)
+
+
+SILENT_DB = -70.0     # a stretch whose loudest moment is quieter than this has no sound (Twitch mutes to -91)
+
+
+def silent_stretch(ffmpeg: Path, media: Path, start_s: float, end_s: float, chunk_s: float = 8.0) -> float | None:
+    """Where the first silent `chunk_s` stretch within [start_s, end_s] of a file begins (seconds), or None.
+
+    Twitch mutes VODs in blocks where it hears copyrighted music, so a cut from a VOD can be silent
+    in parts while the clip viewers made still has its sound."""
+    t = max(0.0, start_s)
+    while t < end_s - 1.0:
+        length = min(chunk_s, end_s - t)
+        cmd = [str(ffmpeg), "-hide_banner", "-nostats", "-nostdin", "-ss", f"{t:.2f}", "-t", f"{length:.2f}",
+               "-i", str(media), "-vn", "-af", "volumedetect", "-f", "null", "-"]
+        out = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                             text=True, encoding="utf-8", errors="replace", shell=False, **_popen_kwargs())
+        m = re.search(r"max_volume:\s*(-?[\d.]+|-inf) dB", out.stderr or "")
+        if m is None:
+            if "Stream" in (out.stderr or "") and "Audio" not in (out.stderr or ""):
+                return t   # no audio track at all
+            return None    # couldn't tell: don't block anything on it
+        top = float("-inf") if m.group(1) == "-inf" else float(m.group(1))
+        if top < SILENT_DB:
+            return t
+        t += length
+    return None

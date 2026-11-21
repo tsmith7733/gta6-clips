@@ -56,19 +56,27 @@ def create_app(service: ReviewService, client: ClipsKittyClient, publisher: Publ
     def index():
         return page
 
+    @app.get("/api/channels")
+    def channels():
+        """The channels clips go to, for the page's channel switch: [{key, title}]."""
+        def go():
+            return {"channels": [{"key": k, "title": publisher.channel_title(k) if publisher is not None
+                                  else (k or "Clips Kitty's channel")} for k in service.channels()]}
+        return run(go)
+
     @app.get("/api/clips")
-    def clips(status: str = "pending_review"):
+    def clips(status: str = "pending_review", channel: str | None = None):
         def go():
             moved = service.reconcile()
             if publisher is not None:
                 publisher.refresh()
             cards = []
-            for c in service.cards(status):
+            for c in service.cards(status, channel):
                 d = c.as_dict()
                 d["upload"] = publisher.upload_for(c.id) if publisher is not None else None
                 d["channel"] = publisher.channel_for_streamer(c.streamer) if publisher is not None else ""
                 cards.append(d)
-            return {"counts": service.counts(), "clips": cards, "followed": moved}
+            return {"counts": service.counts(channel), "clips": cards, "followed": moved}
         return run(go)
 
     def need_publisher() -> PublishService:

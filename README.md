@@ -218,6 +218,7 @@ Install it, or update it after changing it (Clips Kitty open):
 Every new clip is then checked before it reaches the review page (`qa:` in `config.yaml`):
 
 - **Too short** (under 30 s) **or cut off** at the start or end of its recording: sent back to Clips Kitty once with 15 s more on each side, when the recording has room. The short one is rejected with a note.
+- **No sound**: Twitch mutes parts of a broadcast's VOD where it hears copyrighted music, while the clip viewers made keeps its sound. So a Twitch clip whose VOD cut is silent is made from the Twitch clip itself instead, and any clip that still has a silent stretch goes to Needs a fix.
 - **No split screen** (Clips Kitty didn't find the webcam), or still too short: it goes to the **Needs a fix** tab instead of To review, saying why. There you can **Re-render** it, **Send to review as is**, or **Reject** it. For a missing split screen, draw the webcam box once for that streamer in Clips Kitty's Gaming layout editor and tick *Remember for this creator's next videos*, then Re-render: every later clip of theirs comes out split.
 
 ## Review clips (Phase 4)
@@ -225,6 +226,8 @@ Every new clip is then checked before it reaches the review page (`qa:` in `conf
 ```powershell
 .venv\Scripts\python.exe -m gta6clips review
 ```
+
+With more than one YouTube channel, the buttons above the tabs switch between them (Roasted Clipz for The Burnt Peanut, Cutscene Skipped for the Twitch streamers). Each shows only the clips going to that channel, with its own counts; the page remembers your choice.
 
 Opens a page in your browser at `http://127.0.0.1:8770` (change the port with `review: port:` in `config.yaml`). It only answers on this PC.
 

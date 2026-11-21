@@ -74,17 +74,39 @@ class ReviewService:
         self._reconciled_at: float | None = None
 
     # -- reading ---------------------------------------------------------------------
-    def counts(self) -> dict[str, int]:
-        found = dict(self.conn.execute("SELECT status, COUNT(*) FROM clips GROUP BY status").fetchall())
+    def channels(self) -> list[str]:
+        """The YouTube channel keys clips can go to: '' (Clips Kitty's channel) first, then streamers' own."""
+        keys = {s.youtube_channel for s in self.streamers}
+        return [""] + sorted(k for k in keys if k)
+
+    def _streamers_on(self, channel: str | None) -> list[str] | None:
+        """Names of the streamers whose clips go to `channel` (None: every channel)."""
+        if channel is None:
+            return None
+        return [s.name for s in self.streamers if s.youtube_channel == channel]
+
+    def counts(self, channel: str | None = None) -> dict[str, int]:
+        names = self._streamers_on(channel)
+        if names is None:
+            found = dict(self.conn.execute("SELECT status, COUNT(*) FROM clips GROUP BY status").fetchall())
+        else:
+            marks = ",".join("?" * len(names)) or "NULL"
+            found = dict(self.conn.execute(f"SELECT status, COUNT(*) FROM clips WHERE streamer IN ({marks}) "
+                                           "GROUP BY status", names).fetchall())
         return {tab: int(found.get(tab, 0)) for tab in TABS}
 
-    def cards(self, status: str) -> list[Card]:
+    def cards(self, status: str, channel: str | None = None) -> list[Card]:
         if status not in TABS:
             raise ReviewError(f"unknown tab {status!r}")
+        names = self._streamers_on(channel)
+        where, args = "c.status = ?", [status]
+        if names is not None:
+            where += f" AND c.streamer IN ({','.join('?' * len(names)) or 'NULL'})"
+            args += names
         rows = self.conn.execute(
             "SELECT c.*, COALESCE(w.source_title, '') AS source_title FROM clips c "
-            "LEFT JOIN windows w ON w.id = c.window_id WHERE c.status = ? "
-            "ORDER BY c.score DESC, c.created_at DESC", (status,)).fetchall()
+            f"LEFT JOIN windows w ON w.id = c.window_id WHERE {where} "
+            "ORDER BY c.score DESC, c.created_at DESC", args).fetchall()
         return [self._card(r) for r in rows]
 
     def card(self, clip_id: int) -> Card:

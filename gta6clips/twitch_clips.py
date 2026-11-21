@@ -129,8 +129,12 @@ def _login(streamer: Streamer) -> str:
 
 class TwitchClipSource:
     def __init__(self, *, cfg: Config, conn: sqlite3.Connection, helix: Helix, streamers: list[Streamer],
-                 fetcher: Fetcher, windows_dir: Path, clock: Callable[[], float] = time.time):
+                 fetcher: Fetcher, windows_dir: Path, clock: Callable[[], float] = time.time,
+                 silent: Callable[[Path, float, float], float | None] | None = None):
         self.cfg = cfg
+        # Where a cut is silent within [start, end], or None (media.silent_stretch): Twitch mutes VOD
+        # stretches with copyrighted music, while the clip viewers made keeps its sound.
+        self.silent = silent
         self.conn = conn
         self.helix = helix
         self.streamers = streamers
@@ -254,11 +258,16 @@ class TwitchClipSource:
         clip, title = pick.clip, str(pick.clip.get("title") or "Twitch clip")
         try:
             path = self._cut(pick)
+            if pick.from_vod and self.silent is not None:
+                muted_at = self.silent(path, pick.moment_start_s, pick.moment_end_s)
+                if muted_at is not None:
+                    path.unlink(missing_ok=True)
+                    raise DownloadError(f"Twitch muted the VOD there (silent from {muted_at:.0f} s into the cut)")
         except DownloadError as exc:
             if not pick.from_vod:
                 log.warning("Couldn't download the Twitch clip %r: %s", title, exc)
                 return None   # not recorded, so the next run tries again
-            log.info("Couldn't cut %r from the VOD (%s); using the clip itself.", title, exc)
+            log.info("Couldn't use the VOD for %r (%s); using the clip itself.", title, exc)
             duration = float(clip.get("duration") or 30)
             pick = ClipPick(streamer, clip, str(clip["url"]), str(clip.get("id") or "clip"), 0.0, duration,
                             0.0, duration)

@@ -351,8 +351,11 @@ def _clip_source(cfg, conn, streamers, *, required: bool):
     windows = cfg.get("windows", {}) or {}
     fetcher = YtDlpFetcher(ffmpeg=find_ffmpeg(cfg), cache_dir=cfg.path("paths.cache"),
                            video_format=str(windows.get("video_format", "b")))
+    from .media import silent_stretch
+    ffmpeg = find_ffmpeg(cfg)
     return TwitchClipSource(cfg=cfg, conn=conn, helix=helix, streamers=streamers, fetcher=fetcher,
-                            windows_dir=cfg.path("paths.windows"))
+                            windows_dir=cfg.path("paths.windows"),
+                            silent=lambda path, s, e: silent_stretch(ffmpeg, path, s, e))
 
 
 def _secrets_dir(cfg):
@@ -468,11 +471,14 @@ def _watch(cfg, client, conn, streamers, writer, args) -> int:
     from .live.factory import find_ytdlp, session_factory
     from .live.watcher import Watcher
 
-    make = session_factory(cfg, conn, ffmpeg=find_ffmpeg(cfg), ytdlp=find_ytdlp())
+    from .media import silent_stretch
+    ffmpeg = find_ffmpeg(cfg)
+    make = session_factory(cfg, conn, ffmpeg=ffmpeg, ytdlp=find_ytdlp())
     watcher = Watcher(cfg=cfg, client=client, conn=conn, streamers=streamers, writer=writer, make_session=make,
                       allow_non_gta=args.allow_non_gta,
                       clip_source=_clip_source(cfg, conn, streamers, required=False),
-                      publisher=_held_publisher(cfg, client, conn, streamers))
+                      publisher=_held_publisher(cfg, client, conn, streamers),
+                      silent=lambda path, s, e: silent_stretch(ffmpeg, path, s, e))
     watcher.run(stop_after_s=args.minutes * 60 if args.minutes else None)
     print("\nStopped watching. Nothing is published. Review the clips with: python -m gta6clips clips")
     return 0

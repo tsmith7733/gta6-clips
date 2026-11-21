@@ -67,7 +67,7 @@ class Watcher:
     def __init__(self, *, cfg: Config, client: ClipsKittyClient, conn: sqlite3.Connection,
                  streamers: list[Streamer], writer: TitleWriter, make_session: SessionFactory,
                  check_live: Callable[[str], LiveCheck] = check_youtube_live, allow_non_gta: bool = False,
-                 clip_source: TwitchClipSource | None = None, publisher=None,
+                 clip_source: TwitchClipSource | None = None, publisher=None, silent=None,
                  clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep):
         self.cfg = cfg
         self.client = client
@@ -81,7 +81,7 @@ class Watcher:
         self.sleep = sleep
         self.keywords = list(cfg.get("gta6.keywords", []) or [])
         self.dispatcher = Dispatcher(cfg=cfg, client=client, conn=conn, streamers=streamers, writer=writer,
-                                     clock=clock)
+                                     clock=clock, silent=silent)
         self.sessions: dict[str, LiveSession] = {}      # streamer name -> session
         self.clip_source = clip_source        # Twitch's top GTA 6 clips, every twitch_clips.every_minutes
         self._last_poll = -1e18

@@ -150,3 +150,42 @@ def test_send_to_review_as_is(cfg, ck, ck_state, conn, streamers, writer, workdi
     assert review.send_to_review(clip["ck_clip_id"]).status == "pending_review"
     notes = json.loads(db.get_clip(conn, clip["ck_clip_id"])["notes"])
     assert any("quality check" in n for n in notes) and any("sent to review as it is" in n for n in notes)
+
+
+def test_a_whole_twitch_clip_is_not_too_short_or_cut_off():
+    assert quality_problems(_ck_clip(0, 25), 25, Q, check_edges=False) == ([], False)
+    problems, _ = quality_problems(_ck_clip(0, 25, layout="fill"), 25, Q, check_edges=False)
+    assert len(problems) == 1 and "no split screen" in problems[0]
+
+
+# -- sound ----------------------------------------------------------------------------------------
+
+import shutil
+import subprocess
+
+needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg isn't installed")
+
+
+@needs_ffmpeg
+def test_silent_stretch_finds_where_the_sound_stops(tmp_path):
+    from gta6clips.media import silent_stretch
+
+    ffmpeg = shutil.which("ffmpeg")
+    media = tmp_path / "half_muted.mp4"
+    # 20 s of tone, then 20 s of silence (what Twitch's muting leaves).
+    subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=20",
+                    "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:d=20", "-filter_complex",
+                    "[0:a][1:a]concat=n=2:v=0:a=1", "-c:a", "aac", str(media)], check=True)
+    assert silent_stretch(Path(ffmpeg), media, 0, 18) is None
+    assert silent_stretch(Path(ffmpeg), media, 10, 38) == pytest.approx(26.0)   # chunks of 8 s from 10 s
+
+
+def test_a_silent_clip_goes_to_needs_a_fix(cfg, ck, ck_state, conn, streamers, writer, workdir):
+    clock = Clock()
+    world = ExactWorld(workdir, clock)
+    world.live[PEANUT] = _check()
+    w = _watcher(cfg, ck, conn, streamers, writer, world, clock)
+    w.dispatcher.silent = lambda path, s, e: s + 5          # no sound 5 s in
+    _run(w, clock, 1800)
+    held = db.clips_by_status(conn, "needs_fix")
+    assert len(held) == 1 and "no sound from 5 s into the clip" in held[0]["notes"]

@@ -55,10 +55,11 @@ class QualitySettings:
 def quality_problems(clip: dict, file_s: float, q: QualitySettings, *, check_edges: bool = True
                      ) -> tuple[list[str], bool]:
     """What's wrong with a clip Clips Kitty made, and whether a wider range could fix it. `check_edges`
-    is off for a Twitch clip used as it is (no VOD): the clip itself is the whole recording."""
+    is off for a Twitch clip used as it is (no VOD): the clip itself is the whole recording, so neither
+    its length nor its edges can be helped."""
     problems, widen = [], False
     start, end = float(clip.get("start_s") or 0), float(clip.get("end_s") or 0)
-    if end - start < q.min_s:
+    if check_edges and end - start < q.min_s:
         problems.append(f"only {end - start:.0f} s long, too short to show the whole story")
         widen = True
     if check_edges and file_s and (start <= q.edge_s or end >= file_s - q.edge_s):
@@ -80,8 +81,10 @@ def clipskitty_finder_options(options: dict) -> dict:
 
 class Dispatcher:
     def __init__(self, *, cfg: Config, client: ClipsKittyClient, conn: sqlite3.Connection,
-                 streamers: list[Streamer], writer: TitleWriter, clock: Callable[[], float] = time.time):
+                 streamers: list[Streamer], writer: TitleWriter, clock: Callable[[], float] = time.time,
+                 silent: Callable[[Path, float, float], float | None] | None = None):
         self.cfg = cfg
+        self.silent = silent   # media.silent_stretch: where a recording is silent within a range, or None
         self.client = client
         self.conn = conn
         self.streamers = streamers
@@ -230,6 +233,11 @@ class Dispatcher:
                 continue
             problems, widen = quality_problems(clip, file_s, self.qa,
                                                check_edges="clip only" not in (row["reasons"] or ""))
+            muted = self._silent_at(row, clip)
+            if muted is not None:
+                problems.append(f"no sound from {muted - float(clip['start_s']):.0f} s into the clip (Twitch mutes "
+                                "parts of a broadcast with copyrighted music)")
+                widen = False
             if not problems:
                 continue
             why = "; ".join(problems)
@@ -242,6 +250,17 @@ class Dispatcher:
             db.set_clip_status(self.conn, o.ck_clip_id, "needs_fix", note=f"quality check: {why}")
             o.status = "needs_fix"
         return outcomes
+
+    def _silent_at(self, row: sqlite3.Row, clip: dict) -> float | None:
+        """Where the clip's stretch of its recording has no sound, or None (also when it can't be checked)."""
+        path = Path(row["local_path"]) if row["local_path"] else None
+        if self.silent is None or path is None or not path.is_file():
+            return None
+        try:
+            return self.silent(path, float(clip["start_s"]), float(clip["end_s"]))
+        except Exception as exc:   # a check that can't run mustn't hold clips back
+            log.debug("Couldn't check the sound of window %s: %s", row["id"], exc)
+            return None
 
     def _send_wider(self, row: sqlite3.Row, clip: dict, file_s: float, why: str) -> bool:
         """Queues the window again for one clip covering the old one plus widen_s each side, when the

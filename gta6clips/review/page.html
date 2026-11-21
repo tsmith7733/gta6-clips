@@ -25,6 +25,10 @@
   h1 { margin: 0 0 10px; font-size: 18px; font-weight: 650; }
   h1 small { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 8px; }
   nav { display: flex; gap: 4px; overflow-x: auto; }
+  #channels { gap: 6px; margin: 4px 0 6px; }
+  #channels button { border: 1px solid var(--line, #8884); border-radius: 999px; padding: 5px 14px; color: var(--ink);
+                     font-weight: 500; }
+  #channels button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
   nav button { border: 0; background: none; color: var(--muted); padding: 8px 12px 10px; font: inherit;
                cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap; }
   nav button.on { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
@@ -86,6 +90,7 @@
 <body>
 <header>
   <h1>Clip review <small>Approving a clip schedules it on YouTube in the next free time slot (private until then).</small></h1>
+  <nav id="channels" aria-label="YouTube channel"></nav>
   <nav id="tabs"></nav>
 </header>
 <main id="list"></main>
@@ -99,6 +104,10 @@ const TABS = [
 let tab = "pending_review";
 try { tab = localStorage.getItem("review.tab") || tab; } catch (e) {}
 if (!TABS.some(t => t[0] === tab)) tab = "pending_review";
+// Which YouTube channel's clips are shown: "" is the one connected in Clips Kitty (Roasted Clipz).
+let channel = "";
+try { channel = localStorage.getItem("review.channel") ?? ""; } catch (e) {}
+const clipsUrl = () => `/api/clips?status=${tab}&channel=${encodeURIComponent(channel)}`;
 
 const $ = (sel, el = document) => el.querySelector(sel);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
@@ -116,6 +125,14 @@ async function api(path, body) {
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(data.detail || `${r.status}`);
   return data;
+}
+
+async function drawChannels() {
+  let list = [];
+  try { list = (await api("/api/channels")).channels; } catch (e) { return; }
+  if (!list.some(c => c.key === channel)) channel = "";
+  $("#channels").innerHTML = list.length < 2 ? "" : list.map(c =>
+    `<button data-channel="${esc(c.key)}" class="${c.key === channel ? "on" : ""}">${esc(c.title)}</button>`).join("");
 }
 
 function drawTabs(counts) {
@@ -231,9 +248,9 @@ let shown = "";
 
 async function load(onlyIfChanged = false) {
   try {
-    const data = await api(`/api/clips?status=${tab}`);
+    const data = await api(clipsUrl());
     drawTabs(data.counts);
-    const ids = tab + ":" + data.clips.map(c => `${c.id}/${c.status}/${c.upload?.state || ""}`).join(",");
+    const ids = channel + "/" + tab + ":" + data.clips.map(c => `${c.id}/${c.status}/${c.upload?.state || ""}`).join(",");
     if (onlyIfChanged && ids === shown) return;   // keep players and typed titles as they are
     shown = ids;
     if (data.followed?.length) toast(`Followed ${data.followed.length} clip(s) Clips Kitty rendered again.`);
@@ -307,16 +324,25 @@ $("#tabs").addEventListener("click", e => {
   load();
 });
 
+$("#channels").addEventListener("click", e => {
+  const b = e.target.closest("button[data-channel]");
+  if (!b) return;
+  channel = b.dataset.channel;
+  try { localStorage.setItem("review.channel", channel); } catch (e) {}
+  document.querySelectorAll("#channels button").forEach(x => x.classList.toggle("on", x === b));
+  load();
+});
+
 // New clips arrive while a stream is being watched: refresh the counts, and redraw the list
 // only when its clips changed and nothing on it is being edited or played.
 setInterval(async () => {
   const busy = document.activeElement?.closest?.(".card") || [...document.querySelectorAll("video")].some(v => !v.paused);
   if (busy) {
-    try { drawTabs((await api(`/api/clips?status=${tab}`)).counts); } catch (e) {}
+    try { drawTabs((await api(clipsUrl())).counts); } catch (e) {}
   } else load(true);
 }, 30000);
 
-load();
+drawChannels().then(load);
 </script>
 </body>
 </html>
