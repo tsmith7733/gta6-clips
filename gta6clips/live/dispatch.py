@@ -23,6 +23,7 @@ from ..config import Config
 from ..exact import ExactSettings
 from ..llm import TitleWriter
 from ..postprocess import postprocess_video
+from ..scoring import review_score
 from ..scan import SPOILER_CHAT_MARGIN_S, window_job_options
 from ..spoilers import KeywordSpoilerCheck
 from ..streamers import PermissionDenied, Streamer
@@ -45,7 +46,7 @@ def window_clip_score(row) -> int | None:
     """
     if row["finder"] != "exact" or row["score"] is None:
         return None
-    return max(1, min(99, round((float(row["score"]) - 3.0) * 20)))
+    return review_score(row["score"])
 
 
 @dataclass(frozen=True)

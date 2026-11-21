@@ -28,7 +28,7 @@ from . import db
 from .config import Config
 from .downloads import DownloadError, Fetcher
 from .exact import ExactSettings
-from .scoring import clock as _clock
+from .scoring import clock as _clock, review_score
 from .sources import SourceInfo
 from .streamers import Streamer, channel_keys, require_permission
 from .twitch import Helix, HelixError
@@ -45,6 +45,7 @@ class ClipSettings:
     every_s: float = 7200.0
     hours: float = 24.0
     min_views: int = 50
+    min_score: int = 0            # the review page's 1-99 score (65 = about 1,800 views)
     max_per_streamer: int = 3
     max_per_run: int = 6
     lead_in_s: float = 45.0
@@ -60,6 +61,7 @@ class ClipSettings:
             every_s=float(s.get("every_minutes", d.every_s / 60)) * 60,
             hours=float(s.get("hours", d.hours)),
             min_views=int(s.get("min_views", d.min_views)),
+            min_score=int(s.get("min_score", d.min_score)),
             max_per_streamer=int(s.get("max_per_streamer", d.max_per_streamer)),
             max_per_run=int(s.get("max_per_run", d.max_per_run)),
             lead_in_s=float(s.get("lead_in_seconds", d.lead_in_s)),
@@ -187,7 +189,7 @@ class TwitchClipSource:
         if str(clip.get("game_id") or "") != game:
             return None, ""                                    # another game: not worth a line
         views = int(clip.get("view_count") or 0)
-        if views < self.settings.min_views:
+        if views < self.settings.min_views or review_score(clip_score(views)) < self.settings.min_score:
             return None, ""
         url = str(clip.get("url") or "")
         if not url or db.windows_for_source(self.conn, url):

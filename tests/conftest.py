@@ -46,6 +46,7 @@ def workdir(tmp_path: Path) -> Path:
 def cfg(workdir: Path):
     config = load_config(workdir / "config.yaml", load_env=False)
     config.data["clipskitty"]["poll_seconds"] = 0
+    config.data["twitch_clips"]["min_score"] = 0    # tests pick their own view counts
     return config
 
 

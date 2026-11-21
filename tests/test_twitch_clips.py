@@ -296,3 +296,10 @@ def test_a_muted_vod_cut_falls_back_to_the_clip(cfg, conn, twitch_streamers, wor
     row = db.live_windows(conn, ("planned",))[0]
     assert fetcher.cuts[-1][0] == "https://clips.twitch.tv/a" and "clip only" in row["reasons"]
     assert not list((workdir / "windows").glob("twitch_555_*"))       # the silent cut is deleted
+
+
+def test_clips_under_the_minimum_score_are_skipped(cfg, conn, twitch_streamers, workdir):
+    cfg.data["twitch_clips"]["min_score"] = 65           # about 1,800 views
+    fake = FakeTwitch({"id_kairacer": [clip("big", 2000), clip("small", 1500, offset=5000)]})
+    src = make_source(cfg, conn, twitch_streamers, fake, workdir)
+    assert [p.clip["id"] for p in src.find().picks] == ["big"]

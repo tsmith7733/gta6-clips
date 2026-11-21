@@ -228,3 +228,9 @@ def clock(seconds: float) -> str:
     """h:mm:ss"""
     s = int(seconds)
     return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}"
+
+
+def review_score(window_score: float) -> int:
+    """The 1-99 score the review page shows, from a window score (chat spike strength live,
+    3 + log10(views) for a Twitch clip; both ~4-9): 100 views -> 40, 1,000 -> 60, 10,000 -> 80."""
+    return max(1, min(99, round((float(window_score) - 3.0) * 20)))
