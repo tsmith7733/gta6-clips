@@ -35,6 +35,19 @@ QA_WIDEN_TIMES = 1          # a window is sent back wider at most this often
 MIN_WINDOW_BYTES = 10_000    # a cut smaller than this came out empty (bad ones were 261 bytes)
 
 
+def window_clip_score(row) -> int | None:
+    """A 1-99 clip score from our window's own score, for windows our exact-moments plugin cut.
+
+    That plugin only renders the range we name, so the score Clips Kitty gets back from it is the
+    same 90 for every clip. Our window score (chat spike strength live, 3 + log10(views) for a
+    Twitch clip; both ~4-9) is what actually ranks the moment: 100 views -> 40, 1,000 -> 60,
+    10,000 -> 80. Other windows keep the score Clips Kitty's finder gave (None).
+    """
+    if row["finder"] != "exact" or row["score"] is None:
+        return None
+    return max(1, min(99, round((float(row["score"]) - 3.0) * 20)))
+
+
 @dataclass(frozen=True)
 class QualitySettings:
     enabled: bool = True
@@ -326,7 +339,8 @@ class Dispatcher:
 
             outcomes = postprocess_video(self.client, self.conn, self.cfg, streamer, video_id, self.writer,
                                          window_id=row["id"], source_title=row["source_title"],
-                                         spoilers=self.spoilers, chat_for=chat_for)
+                                         spoilers=self.spoilers, chat_for=chat_for,
+                                         score=window_clip_score(row))
             if not outcomes:
                 if self._render_failed(row):
                     if self._retry_render(row):

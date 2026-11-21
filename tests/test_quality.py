@@ -94,7 +94,17 @@ def test_live_windows_ask_for_the_moment_around_the_spike(cfg, ck, ck_state, con
     row = db.live_windows(conn, ("collected",))[0]
     peak = START + 1500 - row["start_utc"]           # where the spike's peak sits in the cut
     assert end - start == pytest.approx(68, abs=0.2) and start < peak < end
-    assert db.clips_by_status(conn, "pending_review")
+    clip = db.clips_by_status(conn, "pending_review")[0]
+    assert clip["score"] == max(1, min(99, round((row["score"] - 3) * 20)))   # ours, not the plugin's flat 90
+
+
+def test_exact_clips_are_scored_from_our_window():
+    from gta6clips.live.dispatch import window_clip_score
+
+    assert window_clip_score({"finder": "exact", "score": 5.0}) == 40          # a Twitch clip with 100 views
+    assert window_clip_score({"finder": "exact", "score": 6.0}) == 60          # 1,000 views
+    assert window_clip_score({"finder": "exact", "score": 12.0}) == 99
+    assert window_clip_score({"finder": "clipskitty", "score": 6.0}) is None   # a real finder scored it
 
 
 def test_a_short_clip_is_sent_back_wider_once_then_held(cfg, ck, ck_state, conn, streamers, writer, workdir):

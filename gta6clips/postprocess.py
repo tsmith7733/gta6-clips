@@ -99,8 +99,12 @@ def postprocess_video(client: ClipsKittyClient, conn: sqlite3.Connection, cfg: C
                       ck_video_id: str, writer: TitleWriter, *, window_id: int | None = None,
                       source_title: str = "", refresh: bool = False,
                       spoilers: SpoilerCheck | None = None,
-                      chat_for: Callable[[float, float], list[str]] | None = None) -> list[ClipOutcome]:
+                      chat_for: Callable[[float, float], list[str]] | None = None,
+                      score: int | None = None) -> list[ClipOutcome]:
     """Credits, tags and titles every clip of one Clips Kitty video, and holds possible spoilers.
+
+    `score` replaces Clips Kitty's score for these clips: our exact-moments plugin picks
+    nothing itself, so the score it hands back says nothing about the moment.
 
     `chat_for(start_s, end_s)` returns the chat around a clip (times within this video),
     for the spoiler check; without it only titles and the transcript are checked.
@@ -158,7 +162,7 @@ def postprocess_video(client: ClipsKittyClient, conn: sqlite3.Connection, cfg: C
 
         db.upsert_clip(
             conn, ck_clip_id=clip_id, window_id=window_id, ck_video_id=ck_video_id, streamer=streamer.name,
-            status=status, score=clip.get("score"), start_s=start_s, end_s=end_s,
+            status=status, score=score if score is not None else clip.get("score"), start_s=start_s, end_s=end_s,
             title=titles[0], title_options=titles, hook=hook, description=description,
             hashtags=hashtags, notes=notes,
         )
