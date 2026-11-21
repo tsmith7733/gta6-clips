@@ -165,7 +165,7 @@ twitch_clips:
   every_minutes: 120
   hours: 24                  # clips made in the last this many hours
   min_views: 50
-  min_score: 65              # review score 1-99 (100 views = 40, 1,000 = 60, ~1,800 = 65, 10,000 = 80)
+  min_score: 60              # review score 1-99 (100 views = 40, 1,000 = 60, ~1,800 = 65, 10,000 = 80)
   max_per_streamer: 3        # per check
   max_per_run: 6             # per check, all streamers together (most viewed first)
   lead_in_seconds: 45        # cut from the VOD this long before the clip...
