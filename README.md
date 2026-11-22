@@ -192,7 +192,7 @@ After 45 minutes with nothing sent, the bar drops to 3.5, so a quieter stream st
 
 ## Twitch's top clips
 
-Viewers already clip a Twitch stream's best moments. For each Twitch streamer in `streamers.yaml` with `permission: true`, `watch` asks Twitch every 2 hours (`twitch_clips.every_minutes`) for their most-viewed GTA 6 clips of the last 24 hours (at least `min_views`, and a review score of at least `min_score`, 60 = about 1,000 views; up to 3 per streamer and 6 per check). Each clip is cut from the stream's VOD with 45 s before it and 30 s after (`lead_in_seconds`, `tail_seconds`), so the Short gets its setup and you have slack to trim. Our exact-moments plugin makes the Short from the clipped time range plus 12 s each side, and the clip lands on the review page with the streamer's credit, like any other. A clip without a VOD (deleted or subscriber-only) is used as it is. A clip is never sent twice, nor a second clip of the same moment. The score on the review page (1-99) comes from the views: 100 = 40, 1,000 = 60, 10,000 = 80; live clips get theirs from the chat spike on the same scale.
+Viewers already clip a Twitch stream's best moments. For each Twitch streamer in `streamers.yaml` with `permission: true`, `watch` asks Twitch every 2 hours (`twitch_clips.every_minutes`) for their most-viewed GTA 6 clips of the last 24 hours (at least `min_views`, and a review score of at least `min_score`, 60 = about 1,000 views; up to 3 per streamer and 6 per check). Each clip is cut from the stream's VOD with 45 s before it and 30 s after (`lead_in_seconds`, `tail_seconds`), so the Short gets its setup and you have slack to trim. Our exact-moments plugin makes the Short from the clipped time range plus 2 s each side, and passes the clip's Twitch title to the AI that writes the Short's title, and the clip lands on the review page with the streamer's credit, like any other. A clip without a VOD (deleted or subscriber-only) is used as it is. A clip is never sent twice, nor a second clip of the same moment. The score on the review page (1-99) comes from the views: 100 = 40, 1,000 = 60, 10,000 = 80; live clips get theirs from the chat spike on the same scale.
 
 Needs the Twitch app keys (below). Preview what would be picked, without downloading anything:
 
@@ -206,8 +206,12 @@ Without `--dry-run` it cuts and queues them right away; the running `watch` send
 
 Clips Kitty's own moment finders kept making 12–25 s clips that cut the story short. So this repo ships a small Clips Kitty plugin, `plugins\exact-moments` (no network; it only reads the transcript). We tell it the exact range and it makes one clip of that range, moving each end up to 4 s to a sentence break. Clips Kitty still does the split layout, captions, titles and rendering. The range is:
 
-- for a Twitch clip: what viewers clipped, plus 12 s each side (`clipskitty.exact_moments.pad_seconds`);
-- live: 50 s before the chat spike's peak to 18 s after it (chat reacts late), `live_before_peak` / `live_after_peak`.
+- for a Twitch clip: what viewers clipped, plus 2 s each side (`clipskitty.exact_moments.pad_seconds`);
+- live: 30 s before the chat spike's peak to 8 s after it (chat reacts late), `live_before_peak` / `live_after_peak`.
+
+These are tight on purpose: in YouTube Studio about 60% of viewers swiped away in the first seconds and the Shorts feed barely showed the clips, so a clip starts at the setup and ends just after the reaction (20–40 s, `clips.max_seconds` 45).
+
+The plugin also tells the AI that writes the title what happened, so titles name the event instead of "WHAT IS HAPPENING?!": a Twitch clip's own title, or the live chat lines repeated most during the moment (laughs left out).
 
 Install it, or update it after changing it (Clips Kitty open):
 

@@ -121,8 +121,8 @@ def test_picks_gta6_clips_with_views_and_cuts_them_from_the_vod_with_slack(cfg, 
     assert [r["source_url"] for r in rows] == ["https://clips.twitch.tv/top", "https://clips.twitch.tv/second"]
     top = rows[0]
     assert top["finder"] == "exact" and top["stream_video_id"] == "kairacer@clips"
-    # The clip we'll ask for: the 30 s viewers clipped (45-75 s into the cut) plus 12 s each side.
-    assert (top["moment_start_s"], top["moment_end_s"]) == (33.0, 87.0)
+    # The clip we'll ask for: the 30 s viewers clipped (45-75 s into the cut) plus 2 s each side.
+    assert (top["moment_start_s"], top["moment_end_s"]) == (43.0, 77.0)
     assert "0:45-1:15" in top["focus"] and top["score"] == clip_score(900)
     assert Path(top["local_path"]).is_file()
     # A second run queues nothing new.
@@ -188,8 +188,11 @@ def test_dispatcher_sends_a_twitch_clip_to_clipskittys_finder_with_its_focus(cfg
     d = Dispatcher(cfg=cfg, client=ck, conn=conn, streamers=twitch_streamers, writer=FakeWriter())
     d.tick()
     body = ck_state.submissions[-1]
-    assert body["pipeline"] == {"id": "gta6clips/exact-moments", "version": "1.0.0",
-                                "settings": {"ranges": "33.0-87.0", "snap_seconds": 4.0}}
+    settings = body["pipeline"]["settings"]
+    assert body["pipeline"]["id"] == "gta6clips/exact-moments" and body["pipeline"]["version"] == "1.1.0"
+    assert settings["ranges"] == "43.0-77.0" and settings["snap_seconds"] == 4.0
+    # The viewers' own name for the moment goes to the AI that writes the title.
+    assert settings["notes"].startswith("Twitch viewers clipped this moment and called it")
     assert body["channel"] == "kairacer" and body["max_clips"] == 1 and "force" not in body
     assert body["title"].endswith("[Twitch clip]") and body["focus"].startswith("Twitch viewers clipped 0:45-1:15")
     d.tick()

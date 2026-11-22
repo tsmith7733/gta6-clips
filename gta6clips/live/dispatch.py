@@ -20,7 +20,7 @@ from .. import db, notify
 from ..clipskitty import ClipsKittyClient, ClipsKittyError, JobRefused, QueueFull
 from ..clipskitty.readiness import check_readiness
 from ..config import Config
-from ..exact import ExactSettings
+from ..exact import CHAT_LAG_S, ExactSettings, chat_notes, twitch_notes
 from ..llm import TitleWriter
 from ..postprocess import postprocess_video
 from ..scoring import review_score
@@ -52,9 +52,9 @@ def window_clip_score(row) -> int | None:
 @dataclass(frozen=True)
 class QualitySettings:
     enabled: bool = True
-    min_s: float = 30.0
+    min_s: float = 15.0
     edge_s: float = 1.5
-    widen_s: float = 15.0
+    widen_s: float = 8.0
     require_split: bool = True
 
     @classmethod
@@ -171,7 +171,8 @@ class Dispatcher:
             if row["focus"]:
                 options["focus"] = " ".join(str(row["focus"]).split())[:600]   # Clips Kitty's limit
             if row["finder"] == "exact" and row["moment_start_s"] is not None and self.exact.enabled:
-                options["pipeline"] = self.exact.pipeline(float(row["moment_start_s"]), float(row["moment_end_s"]))
+                options["pipeline"] = self.exact.pipeline(float(row["moment_start_s"]), float(row["moment_end_s"]),
+                                                          notes=self._title_notes(row))
                 options["max_clips"] = 1
                 options.pop("force", None)
             try:
@@ -295,6 +296,19 @@ class Dispatcher:
                          moment_start_s=start, moment_end_s=end, widened=n, not_before=None)
         log.info("Window %s's clip was %s; sending it again as %.0f-%.0f s.", row["id"], why, start, end)
         return True
+
+    def _title_notes(self, row: sqlite3.Row) -> list[str]:
+        """What happens in the moment, for the title: the Twitch clip's own title, or live chat."""
+        if str(row["stream_video_id"]).endswith("@clips"):
+            return twitch_notes(row["source_title"])
+        if row["start_utc"] is None or row["moment_start_s"] is None:
+            return []
+        start = float(row["start_utc"]) + float(row["moment_start_s"])
+        end = float(row["start_utc"]) + float(row["moment_end_s"]) + CHAT_LAG_S
+        texts = [r[0] for r in self.conn.execute(
+            "SELECT text FROM chat_messages WHERE stream_id = ? AND t_utc BETWEEN ? AND ?",
+            (row["stream_id"], start, end))]
+        return chat_notes(texts)
 
     def _retry_with_clipskitty_finder(self, row: sqlite3.Row) -> bool:
         """The GTA plugin found nothing: queue the window again for Clips Kitty's own finder (once)."""

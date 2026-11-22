@@ -37,10 +37,12 @@ clipskitty:
   exact_moments:
     enabled: true
     id: gta6clips/exact-moments
-    version: "1.0.0"
-    pad_seconds: 12            # around a Twitch clip (slack for hand trimming)
-    live_before_peak: 50       # live: seconds before the chat spike's peak...
-    live_after_peak: 18        # ...and after it
+    version: "1.1.0"
+    # Tight on purpose (2026-11-22): on Roasted Clipz ~60% swiped away in the first seconds, so a
+    # clip starts at the setup and ends just after the reaction, 20-40 s.
+    pad_seconds: 2             # around a Twitch clip's viewer-clipped range
+    live_before_peak: 30       # live: seconds before the chat spike's peak (chat is ~20 s late)...
+    live_after_peak: 8         # ...and after it
     snap_seconds: 4
   # Options sent with every job.
   job:
@@ -53,30 +55,26 @@ clipskitty:
       with cops, his reactions to the radio, TV, gore or a bug, dumb plans going
       wrong, crashes, chaotic physics, insane stunts. Prefer a joke with its
       punchline and his reaction over plain action. Skip story cutscenes and
-      game-character dialogue. The owner trims every clip by hand, so leave slack:
-      start 10-15 seconds before the setup and keep going 10-15 seconds after
-      the payoff and his reaction, 40-90 seconds in all.
+      game-character dialogue. Start right at the setup, with no dead air, and
+      end just after the payoff and his reaction: 20-40 seconds in all.
   # How often to ask Clips Kitty whether a job is finished, and for how long.
   poll_seconds: 30
   job_timeout_hours: 6
 
 clips:
   # Our target length. Clips outside it are kept but flagged for review.
-  # Launch-week GTA 6 streamer clips that did best on YouTube ran 40-105 s (median ~50 s): long
-  # enough for the setup, the payoff and the reaction.
-  # Clips come with 10-15 s of slack on each side for the owner to trim (focus text above),
-  # so the target allows for that.
+  # Shorts that hold viewers best are 20-40 s: setup, payoff, reaction, no dead air.
   min_seconds: 15
-  max_seconds: 90
+  max_seconds: 45
 
 # The check every new clip gets before it reaches the review page. A clip that fails goes to the
 # "Needs a fix" tab instead (with why). A clip that's too short or cut off at the edge of its
 # recording is first sent back once with a wider range, when the recording has room.
 qa:
   enabled: true
-  min_seconds: 30            # shorter than this: too short to show the whole story
+  min_seconds: 15            # shorter than this: too short to show the whole story
   edge_seconds: 1.5          # this close to the start or end of the recording: cut off
-  widen_seconds: 15          # how much wider each side, when sending it back
+  widen_seconds: 8           # how much wider each side, when sending it back
   require_split: true        # no webcam in the picture (layout "fill"): needs a fix
 
 metadata:
@@ -172,7 +170,7 @@ twitch_clips:
   tail_seconds: 30           # ...and after it (setup, reaction, and slack for hand trimming)
   focus: >-
     Funny or wild GTA 6 moment. Keep the setup, the payoff and the streamer's reaction,
-    and leave 10-15 seconds of slack on each side for hand trimming. Skip story cutscenes.
+    with no dead air before or after: 20-40 seconds. Skip story cutscenes.
 
 publish:
   timezone: America/Chicago

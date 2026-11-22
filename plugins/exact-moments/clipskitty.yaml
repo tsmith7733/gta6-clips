@@ -1,13 +1,15 @@
 manifest_version: 1
 id: gta6clips/exact-moments
 name: Exact moments (gta6-clips)
-version: 1.0.0
+version: 1.1.0
 kind: pipeline
 capability: highlight_detection
 description: >
   Makes one clip from each time range the gta6-clips orchestrator names in its settings,
   moving each end to the nearest sentence break in the transcript so a clip doesn't start
-  or stop mid-sentence. It picks nothing on its own and needs no network.
+  or stop mid-sentence. It can pass notes the orchestrator gives it (what Twitch viewers
+  titled the clip, what chat said) to the AI that writes the title. It picks nothing on its
+  own and needs no network.
 author: {name: gta6-clips}
 license: MIT
 requires: {clips_kitty: '>=2.1.0', plugin_api: 1}
@@ -16,7 +18,7 @@ run:
   timeout_minutes: 5
 execution: local
 inputs: [transcript]
-outputs: [ranges]
+outputs: [ranges, context]
 settings:
   ranges:
     type: string
@@ -29,6 +31,11 @@ settings:
     minimum: 0
     maximum: 15
     title: How far an end may move to reach a sentence break
+  notes:
+    type: string
+    default: ''
+    max_length: 800
+    title: What happens in the moment, for the title (notes separated by ||)
   label:
     type: string
     default: moment

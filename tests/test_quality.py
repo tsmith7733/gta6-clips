@@ -37,6 +37,23 @@ def test_plugin_reads_ranges_and_refuses_bad_ones():
             p.parse_ranges(bad)
 
 
+def test_plugin_reads_notes_for_the_title():
+    p = _plugin()
+    assert p.parse_notes('Twitch viewers called it "13 YEARS" || chat: "new car" ||  || chat: "new car"') == [
+        'Twitch viewers called it "13 YEARS"', 'chat: "new car"']
+    assert len(p.parse_notes(" || ".join(f"note {i}" for i in range(9)))) == 5
+    assert len(p.parse_notes("x" * 300)[0]) == 160
+
+
+def test_live_chat_notes_keep_what_viewers_said_not_laughs():
+    from gta6clips.exact import chat_notes
+
+    notes = chat_notes(["LMAOOOO", "lmao", "KEKW", "?????", "hahaha", "new car", "New car!", "gas station",
+                        ":face-turquoise-music-note:", "omg", "pay and spray"])
+    assert notes == ['Live chat during this moment: "new car"; "gas station"; "pay and spray"']
+    assert chat_notes(["LOL", "W", "xD"]) == []
+
+
 def test_plugin_moves_ends_to_sentence_breaks_within_the_limit():
     p = _plugin()
     segs = [{"start": 30.0, "end": 34.0}, {"start": 34.5, "end": 88.2}, {"start": 95.0, "end": 99.0}]
@@ -56,7 +73,7 @@ def _ck_clip(start, end, layout="split"):
 
 def test_quality_rules():
     assert quality_problems(_ck_clip(40, 100), 180, Q) == ([], False)
-    problems, widen = quality_problems(_ck_clip(40, 55), 180, Q)
+    problems, widen = quality_problems(_ck_clip(40, 50), 180, Q)
     assert widen and "too short" in problems[0]
     problems, widen = quality_problems(_ck_clip(120, 179.5), 180, Q)
     assert widen and "cut off at the end" in problems[0]
@@ -94,6 +111,7 @@ def test_live_windows_ask_for_the_moment_around_the_spike(cfg, ck, ck_state, con
     row = db.live_windows(conn, ("collected",))[0]
     peak = START + 1500 - row["start_utc"]           # where the spike's peak sits in the cut
     assert end - start == pytest.approx(68, abs=0.2) and start < peak < end
+    assert body["pipeline"]["settings"]["notes"].startswith("Live chat during this moment:")
     clip = db.clips_by_status(conn, "pending_review")[0]
     assert clip["score"] == max(1, min(99, round((row["score"] - 3) * 20)))   # ours, not the plugin's flat 90
 
@@ -113,7 +131,7 @@ def test_a_short_clip_is_sent_back_wider_once_then_held(cfg, ck, ck_state, conn,
     first, second = ck_state.submissions[:2]
     s1, e1 = (float(x) for x in first["pipeline"]["settings"]["ranges"].split("-"))
     s2, e2 = (float(x) for x in second["pipeline"]["settings"]["ranges"].split("-"))
-    assert (s2, e2) == (pytest.approx(max(0.0, s1 - 15)), pytest.approx(e1 + 15))
+    assert (s2, e2) == (pytest.approx(max(0.0, s1 - 8)), pytest.approx(e1 + 8))
     assert "_wide1" in second["path"]
     rejected = db.clips_by_status(conn, "rejected")
     assert len(rejected) == 1 and "wider range" in rejected[0]["notes"]

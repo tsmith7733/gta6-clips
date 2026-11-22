@@ -42,3 +42,14 @@ def snap(start: float, end: float, segments: list[dict], limit: float) -> tuple[
     if new_end <= new_start + 1:
         return start, end
     return new_start, new_end
+
+
+def parse_notes(text: str, limit: int = 5, length: int = 160) -> list[str]:
+    """'a || b' -> ['a', 'b']: what happens in the moment, for the AI that writes the title.
+    At most `limit` notes (Clips Kitty's maximum), each one line of at most `length` characters."""
+    notes = []
+    for part in (text or "").split("||"):
+        note = " ".join(part.split())[:length].rstrip()
+        if note and note not in notes:
+            notes.append(note)
+    return notes[:limit]
