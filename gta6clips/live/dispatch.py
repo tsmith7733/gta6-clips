@@ -24,6 +24,7 @@ from ..exact import CHAT_LAG_S, ExactSettings, chat_notes, twitch_notes
 from ..llm import TitleWriter
 from ..postprocess import postprocess_video
 from ..scoring import review_score
+from ..compilation import compilation_parts, is_compilation_stream, parts_context
 from ..scan import SPOILER_CHAT_MARGIN_S, window_job_options
 from ..spoilers import KeywordSpoilerCheck
 from ..streamers import PermissionDenied, Streamer
@@ -96,8 +97,11 @@ def clipskitty_finder_options(options: dict) -> dict:
 class Dispatcher:
     def __init__(self, *, cfg: Config, client: ClipsKittyClient, conn: sqlite3.Connection,
                  streamers: list[Streamer], writer: TitleWriter, clock: Callable[[], float] = time.time,
-                 silent: Callable[[Path, float, float], float | None] | None = None):
+                 silent: Callable[[Path, float, float], float | None] | None = None,
+                 compilation_writer: TitleWriter | None = None):
         self.cfg = cfg
+        # Writes compilations' titles and descriptions (Opus); without it they get the usual writer.
+        self.compilation_writer = compilation_writer
         self.silent = silent   # media.silent_stretch: where a recording is silent within a range, or None
         self.client = client
         self.conn = conn
@@ -162,6 +166,8 @@ class Dispatcher:
                 continue
             if str(row["stream_video_id"]).endswith("@clips"):
                 title = f"{row['source_title']} [Twitch clip]"[:100]
+            elif is_compilation_stream(row["stream_video_id"]):
+                title = f"{row['source_title']} #{row['id']}"[:100]
             else:
                 started = datetime.fromtimestamp(row["start_utc"] or 0, timezone.utc).strftime("%H:%M")
                 title = f"{row['source_title']} [live {started} UTC]"[:100]
@@ -246,8 +252,9 @@ class Dispatcher:
             clip = theirs.get(o.ck_clip_id)
             if clip is None:
                 continue
-            problems, widen = quality_problems(clip, file_s, self.qa,
-                                               check_edges="clip only" not in (row["reasons"] or ""))
+            # A Twitch clip used as it is, or a compilation, is its whole recording: no edges to fix.
+            whole = "clip only" in (row["reasons"] or "") or is_compilation_stream(row["stream_video_id"])
+            problems, widen = quality_problems(clip, file_s, self.qa, check_edges=not whole)
             muted = self._silent_at(row, clip)
             if muted is not None:
                 problems.append(f"no sound from {muted - float(clip['start_s']):.0f} s into the clip (Twitch mutes "
@@ -301,6 +308,9 @@ class Dispatcher:
         """What happens in the moment, for the title: the Twitch clip's own title, or live chat."""
         if str(row["stream_video_id"]).endswith("@clips"):
             return twitch_notes(row["source_title"])
+        if is_compilation_stream(row["stream_video_id"]):
+            parts = compilation_parts(self.conn, row["id"])
+            return [f"A compilation of {len(parts)} driving fails, one after another"] +                 [f"{p.get('kind')}: {p.get('note')}" for p in parts[:4]]
         if row["start_utc"] is None or row["moment_start_s"] is None:
             return []
         start = float(row["start_utc"]) + float(row["moment_start_s"])
@@ -352,10 +362,20 @@ class Dispatcher:
                 return [t for _, t in db.chat_for_stream(self.conn, _sid, _offset + start_s - SPOILER_CHAT_MARGIN_S,
                                                          _offset + end_s + SPOILER_CHAT_MARGIN_S)]
 
-            outcomes = postprocess_video(self.client, self.conn, self.cfg, streamer, video_id, self.writer,
+            compiled = is_compilation_stream(row["stream_video_id"])
+            parts = compilation_parts(self.conn, row["id"]) if compiled else []
+            writer = self.compilation_writer if compiled and self.compilation_writer is not None else self.writer
+            outcomes = postprocess_video(self.client, self.conn, self.cfg, streamer, video_id, writer,
                                          window_id=row["id"], source_title=row["source_title"],
                                          spoilers=self.spoilers, chat_for=chat_for,
-                                         score=window_clip_score(row))
+                                         score=window_clip_score(row), context=parts_context(parts),
+                                         check_length=not compiled)
+            if compiled:
+                for o in outcomes:
+                    if not o.skipped:
+                        db.add_clip_note(self.conn, o.ck_clip_id, "compilation of clips " + ", ".join(
+                            f"{p['clip']} ({p.get('kind')})" for p in parts) +
+                            ". To drop one: python -m gta6clips compile --drop <clip>")
             if not outcomes:
                 if self._render_failed(row):
                     if self._retry_render(row):

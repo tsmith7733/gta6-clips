@@ -111,6 +111,35 @@ CREATE TABLE IF NOT EXISTS segments (
 );
 CREATE INDEX IF NOT EXISTS segments_stream_time ON segments(stream_id, start_utc);
 
+-- Compilations: every clip is checked once for a driving fail (by Claude); the fails are joined
+-- into one Short, which goes through Clips Kitty and review like any other clip.
+CREATE TABLE IF NOT EXISTS fail_checks (
+    ck_clip_id     INTEGER PRIMARY KEY,
+    streamer       TEXT NOT NULL,
+    window_id      INTEGER REFERENCES windows(id),
+    is_fail        INTEGER NOT NULL,
+    start_s        REAL,                  -- the fail, in seconds of the window's file
+    end_s          REAL,
+    strength       INTEGER NOT NULL DEFAULT 0,
+    kind           TEXT NOT NULL DEFAULT '',
+    note           TEXT NOT NULL DEFAULT '',
+    model          TEXT NOT NULL DEFAULT '',
+    compilation_id INTEGER,               -- the compilation it went into
+    excluded       INTEGER NOT NULL DEFAULT 0,   -- the owner dropped it
+    checked_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS compilations (
+    id          INTEGER PRIMARY KEY,
+    streamer    TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    window_id   INTEGER REFERENCES windows(id),
+    path        TEXT NOT NULL,
+    parts       TEXT NOT NULL DEFAULT '[]',   -- JSON: [{clip, start_s, end_s, at_s, kind, note, strength}]
+    state       TEXT NOT NULL DEFAULT 'queued',   -- queued | dropped
+    created_at  TEXT NOT NULL
+);
+
 -- Small cached values (the Twitch GTA 6 game id).
 CREATE TABLE IF NOT EXISTS kv (
     key        TEXT PRIMARY KEY,

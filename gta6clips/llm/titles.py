@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 
 MAX_TITLE_CHARS = 100   # YouTube's hard limit
 MAX_HOOK_CHARS = 60
+MAX_DESCRIPTION_CHARS = 600
 
 SYSTEM_PROMPT = """\
 You write YouTube Shorts metadata for clips of streamers playing GTA 6 (Grand Theft Auto VI).
@@ -55,12 +56,14 @@ class ClipBrief:
     clipskitty_hook: str
     transcript: str
     duration_s: float
+    context: str = ""   # what happens, when we know it (a compilation's list of fails)
 
 
 @dataclass(frozen=True)
 class TitleSuggestions:
     titles: list[str]   # exactly 3
     hook: str
+    description: str = ""   # only the compilation writer writes one; '' keeps Clips Kitty's
 
 
 class TitleWriter(Protocol):
@@ -88,7 +91,9 @@ def parse_suggestions(raw: str, fallback_title: str) -> TitleSuggestions:
         titles.append(fallback)
     if not titles:
         raise TitleWriterError("Claude returned no usable titles")
-    return TitleSuggestions(titles=titles[:3], hook=_clean(data.get("hook", ""), MAX_HOOK_CHARS))
+    description = " ".join(str(data.get("description") or "").split())[:MAX_DESCRIPTION_CHARS]
+    return TitleSuggestions(titles=titles[:3], hook=_clean(data.get("hook", ""), MAX_HOOK_CHARS),
+                            description=description)
 
 
 def brief_prompt(brief: ClipBrief) -> str:
@@ -98,8 +103,34 @@ def brief_prompt(brief: ClipBrief) -> str:
         f"Clip length: {brief.duration_s:.0f} seconds\n"
         f"Clips Kitty's draft title: {brief.clipskitty_title or '(none)'}\n"
         f"Line the clip was picked for: {brief.clipskitty_hook or '(none)'}\n\n"
-        f"Transcript of the clip:\n{brief.transcript or '(no speech)'}"
+        + (f"What happens in it:\n{brief.context}\n\n" if brief.context else "")
+        + f"Transcript of the clip:\n{brief.transcript or '(no speech)'}"
     )
+
+
+COMPILATION_PROMPT = """You write YouTube Shorts metadata for compilations: several short moments of one streamer playing GTA 6 (Grand Theft Auto VI), joined into one Short. You're given what happens in each moment, in order.
+
+Write:
+- titles: exactly 3 different title options, each under 70 characters, punchy and specific. Say it's a compilation of that kind of moment (e.g. "Every Time Peanut Got Behind the Wheel") and name the wildest one where it helps. Use the streamer's name in at most two of them.
+- hook: one short line (under 40 characters) shown on screen in the first 2 seconds. At most one emoji.
+- description: 1-2 plain sentences about the compilation. No links, no hashtags, no credit line (those are added for you).
+
+Rules:
+- Only describe what the moments listed support. Never invent events, quotes or outcomes.
+- No story spoilers: don't name story missions, plot twists or how the story ends.
+- No quotation marks around the whole title, no ALL-CAPS titles.
+"""
+
+COMPILATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "titles": {"type": "array", "items": {"type": "string"}},
+        "hook": {"type": "string"},
+        "description": {"type": "string"},
+    },
+    "required": ["titles", "hook", "description"],
+    "additionalProperties": False,
+}
 
 
 class ClipsKittyTitles:
@@ -126,7 +157,10 @@ class ClipsKittyTitles:
 class ClaudeTitleWriter:
     """TitleWriter backed by the Claude API. Reads ANTHROPIC_API_KEY from the environment."""
 
-    def __init__(self, model: str = "claude-opus-5-5", effort: str = "medium", client=None):
+    def __init__(self, model: str = "claude-opus-5-5", effort: str = "medium", client=None,
+                 system_prompt: str = SYSTEM_PROMPT, schema: dict | None = None):
+        self.system_prompt = system_prompt
+        self.schema = schema or OUTPUT_SCHEMA
         if client is None:
             import anthropic
 
@@ -142,10 +176,10 @@ class ClaudeTitleWriter:
             response = self._client.beta.messages.create(
                 model=self.model,
                 max_tokens=16000,
-                system=SYSTEM_PROMPT,
+                system=self.system_prompt,
                 messages=[{"role": "user", "content": brief_prompt(brief)}],
                 output_config={"effort": self.effort,
-                               "format": {"type": "json_schema", "schema": OUTPUT_SCHEMA}},
+                               "format": {"type": "json_schema", "schema": self.schema}},
                 # If the model declines, the API retries on a fallback model in the same call.
                 betas=["server-side-fallback-2026-07-01"],
                 fallbacks="default",
@@ -167,3 +201,9 @@ class ClaudeTitleWriter:
         text = next((b.text for b in response.content if b.type == "text"), "")
         log.debug("Claude titles (request %s): %s", getattr(response, "_request_id", "?"), text)
         return parse_suggestions(text, brief.clipskitty_title)
+
+
+def compilation_title_writer(model: str = "claude-opus-5-5", effort: str = "medium", client=None) -> ClaudeTitleWriter:
+    """Claude writing a compilation's titles, hook and description from its list of moments."""
+    return ClaudeTitleWriter(model=model, effort=effort, client=client, system_prompt=COMPILATION_PROMPT,
+                             schema=COMPILATION_SCHEMA)

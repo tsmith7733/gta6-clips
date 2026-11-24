@@ -5,7 +5,8 @@ from .titles import (
     TitleSuggestions,
     TitleWriter,
     TitleWriterError,
+    compilation_title_writer,
 )
 
 __all__ = ["ClaudeTitleWriter", "ClipBrief", "ClipsKittyTitles", "TitleSuggestions", "TitleWriter",
-           "TitleWriterError"]
+           "TitleWriterError", "compilation_title_writer"]

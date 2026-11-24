@@ -146,6 +146,29 @@ live:
     max_windows_per_hour: 3    # then only a moment stronger than that hour's best gets through
     min_baseline_seconds: 300  # learn the stream's normal for 5 minutes before sending anything
 
+# Driving-fail compilations (2026-11-24). Claude checks every new clip of these streamers once
+# (frames of its recording, transcript, chat) and, once there are min_fails unused fails, the
+# strongest are joined into one Short that goes through Clips Kitty and the review page like any
+# clip. Needs ANTHROPIC_API_KEY in .env. `compile --dry-run` shows what's been found (no API calls).
+compilations:
+  enabled: true
+  streamers: ["The Burnt Peanut"]
+  every_minutes: 60
+  lookback_days: 14            # fails from clips made in the last 14 days
+  judge_per_run: 40            # Claude checks per run at most
+  min_fails: 5
+  max_fails: 6
+  min_strength: 6              # 1-10, Claude's rating
+  lead_seconds: 1.0            # added around the fail Claude found
+  tail_seconds: 1.5
+  max_part_seconds: 10         # setup, the fail, his reaction
+  max_seconds: 60              # the whole compilation
+  frames: 8                    # frames of each clip Claude looks at
+  judge_model: claude-haiku-5-5    # about 0.1 cent a clip
+  judge_effort: low
+  title_model: claude-opus-5-5     # titles and description of each compilation, a few cents each
+  title_effort: medium
+
 # Phase 4: the review page (python -m gta6clips review). Only ever on 127.0.0.1.
 review:
   port: 8770                 # not 8765, which is Clips Kitty's

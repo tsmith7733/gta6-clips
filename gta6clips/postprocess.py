@@ -100,11 +100,15 @@ def postprocess_video(client: ClipsKittyClient, conn: sqlite3.Connection, cfg: C
                       source_title: str = "", refresh: bool = False,
                       spoilers: SpoilerCheck | None = None,
                       chat_for: Callable[[float, float], list[str]] | None = None,
-                      score: int | None = None) -> list[ClipOutcome]:
+                      score: int | None = None, context: str = "",
+                      check_length: bool = True) -> list[ClipOutcome]:
     """Credits, tags and titles every clip of one Clips Kitty video, and holds possible spoilers.
 
     `score` replaces Clips Kitty's score for these clips: our exact-moments plugin picks
     nothing itself, so the score it hands back says nothing about the moment.
+
+    `context` tells the title writer what happens (a compilation's list of moments); a compilation
+    isn't held to the single-clip length target (`check_length=False`).
 
     `chat_for(start_s, end_s)` returns the chat around a clip (times within this video),
     for the spoiler check; without it only titles and the transcript are checked.
@@ -129,7 +133,7 @@ def postprocess_video(client: ClipsKittyClient, conn: sqlite3.Connection, cfg: C
         notes: list[str] = []
         start_s, end_s = float(clip.get("start_s") or 0), float(clip.get("end_s") or 0)
         duration = max(0.0, end_s - start_s)
-        if duration and not (min_s <= duration <= max_s):
+        if check_length and duration and not (min_s <= duration <= max_s):
             notes.append(f"Length {duration:.0f}s is outside the {min_s:.0f}-{max_s:.0f}s target")
 
         transcript = " ".join(line.get("text", "") for line in client.captions(clip_id)).strip()
@@ -140,15 +144,18 @@ def postprocess_video(client: ClipsKittyClient, conn: sqlite3.Connection, cfg: C
             clipskitty_hook=str(clip.get("hook") or ""),
             transcript=transcript,
             duration_s=duration,
+            context=context,
         )
         try:
             suggestions = writer.write(brief)
             titles, hook = suggestions.titles, suggestions.hook
+            written = suggestions.description
             titles = [t for t in (clean_title(t) for t in titles) if t] or [f"{streamer.name} GTA 6 moment"]
         except TitleWriterError as exc:
             log.warning("Clip %s: %s. Keeping Clips Kitty's title.", clip_id, exc)
             notes.append(f"Title options unavailable: {exc}")
             titles, hook = [brief.clipskitty_title or f"{streamer.name} GTA 6 moment"], ""
+            written = ""
 
         verdict = spoilers.check(source_title=source_title, clip_title=brief.clipskitty_title,
                                  transcript=transcript, chat=chat_for(start_s, end_s) if chat_for else [])
@@ -156,7 +163,7 @@ def postprocess_video(client: ClipsKittyClient, conn: sqlite3.Connection, cfg: C
         if verdict.hold:
             notes.append(verdict.reason)
 
-        description = with_credit(str(clip.get("description") or ""), streamer)
+        description = with_credit(written or str(clip.get("description") or ""), streamer)
         hashtags = merge_hashtags(list(clip.get("hashtags") or []), tags)
         client.patch_clip(clip_id, title=titles[0], description=description, hashtags=hashtags)
 

@@ -202,6 +202,18 @@ Needs the Twitch app keys (below). Preview what would be picked, without downloa
 
 Without `--dry-run` it cuts and queues them right away; the running `watch` sends them to Clips Kitty. Twitch streamers aren't recorded live yet: only their clips are used.
 
+## Driving-fail compilations
+
+For each streamer in `config.yaml → compilations.streamers` (The Burnt Peanut), the watcher checks every new clip once an hour for a driving fail: a crash, a flip, a missed jump, a car in the canal. Claude Haiku looks at 8 frames of the clip's recording, its transcript and the live chat, so it catches the silent crashes too, for about 0.1 cent a clip. Once there are 5 unused fails rated 6/10 or better, the strongest 6 are cut from the original recordings (setup, fail and reaction, up to 10 s each, 60 s in all), joined, and sent to Clips Kitty like any other window. So the compilation gets the split layout, the credit line and a normal card on the review page. Claude Opus writes its title, hook and description from the list of fails. It's published only if you approve it, like every clip.
+
+```powershell
+.venv\Scripts\python.exe -m gta6clips compile --dry-run    # the fails found so far; no Claude calls
+.venv\Scripts\python.exe -m gta6clips compile              # check new clips now and queue a compilation if there are enough
+.venv\Scripts\python.exe -m gta6clips compile --drop 152   # leave clip 152's fail out: the compilation is rebuilt without it
+```
+
+The card's notes list the clips it's made from. `--drop` works until you approve it. Needs `ANTHROPIC_API_KEY` in `.env`; without it compilations are off and everything else runs as before.
+
 ## Clip length and the quality check
 
 Clips Kitty's own moment finders kept making 12–25 s clips that cut the story short. So this repo ships a small Clips Kitty plugin, `plugins\exact-moments` (no network; it only reads the transcript). We tell it the exact range and it makes one clip of that range, moving each end up to 4 s to a sentence break. Clips Kitty still does the split layout, captions, titles and rendering. The range is:

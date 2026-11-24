@@ -68,6 +68,7 @@ class Watcher:
                  streamers: list[Streamer], writer: TitleWriter, make_session: SessionFactory,
                  check_live: Callable[[str], LiveCheck] = check_youtube_live, allow_non_gta: bool = False,
                  clip_source: TwitchClipSource | None = None, publisher=None, silent=None,
+                 compiler=None, compilation_writer=None,
                  clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep):
         self.cfg = cfg
         self.client = client
@@ -81,7 +82,10 @@ class Watcher:
         self.sleep = sleep
         self.keywords = list(cfg.get("gta6.keywords", []) or [])
         self.dispatcher = Dispatcher(cfg=cfg, client=client, conn=conn, streamers=streamers, writer=writer,
-                                     clock=clock, silent=silent)
+                                     clock=clock, silent=silent, compilation_writer=compilation_writer)
+        # Driving-fail compilations (compilation.Compiler), every compilations.every_minutes.
+        self.compiler = compiler
+        self._last_compile = -1e18
         self.sessions: dict[str, LiveSession] = {}      # streamer name -> session
         self.clip_source = clip_source        # Twitch's top GTA 6 clips, every twitch_clips.every_minutes
         self._last_poll = -1e18
@@ -125,6 +129,9 @@ class Watcher:
         if watched:
             log.info("Watching %s (every %.0f s). Ctrl+C stops.", ", ".join(s.name for s in watched),
                      self.settings.poll_s)
+        if self.compiler is not None:
+            log.info("Making %s compilations of %s (checked every %.0f min).", "driving-fail",
+                     ", ".join(self.compiler.settings.streamers), self.compiler.settings.every_s / 60)
         if self.clip_source is not None:
             log.info("Checking Twitch's top GTA 6 clips every %.0f min. Ctrl+C stops.",
                      self.clip_source.settings.every_s / 60)
@@ -160,6 +167,16 @@ class Watcher:
                     log.info("Queued %d Twitch clip(s) for Clips Kitty", len(run.queued))
             except Exception:   # Twitch or a download hiccuped: try again next time
                 log.exception("Problem checking Twitch clips")
+        if self.compiler is not None and now - self._last_compile >= self.compiler.settings.every_s:
+            self._last_compile = now
+            try:
+                run = self.compiler.run_once()
+                if run.judged:
+                    log.info("Checked %d clip(s) for driving fails: %d found", run.judged, run.fails)
+                for comp in run.queued:
+                    log.info("Compilation %d queued for Clips Kitty", comp)
+            except Exception:   # Claude, ffmpeg or a file hiccuped: try again next time
+                log.exception("Problem making compilations")
         if self.publisher is not None and now - self._last_held >= HELD_UPLOADS_EVERY_S:
             self._last_held = now
             try:

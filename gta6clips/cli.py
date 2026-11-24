@@ -62,6 +62,13 @@ def _parser() -> argparse.ArgumentParser:
                                              "(the running watcher sends them to Clips Kitty)")
     tc.add_argument("--dry-run", action="store_true", help="list what would be queued; download nothing")
 
+    comp = sub.add_parser("compile", help="check new clips for driving fails (Claude) and queue a compilation "
+                                          "when there are enough (the running watcher sends it to Clips Kitty)")
+    comp.add_argument("--dry-run", action="store_true",
+                      help="show the fails found so far and what a compilation would hold; no Claude calls")
+    comp.add_argument("--drop", type=int, metavar="CLIP",
+                      help="leave this clip's fail out: its compilation is rejected and built again without it")
+
     review = sub.add_parser("review", help="open the review page: watch clips, pick titles, approve or reject "
                                            "(Phase 4)")
     review.add_argument("--port", type=int, help="override review.port in config.yaml")
@@ -155,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
             return _list_clips(conn, args.status)
         if args.command == "publish":
             return _publish(cfg, client, conn, streamers, args)
+        if args.command == "compile":
+            return _compile(cfg, client, conn, streamers, args)
         if args.command == "review":
             conn.close()
             return _review(cfg, client, streamers, args)
@@ -474,11 +483,78 @@ def _watch(cfg, client, conn, streamers, writer, args) -> int:
     from .media import silent_stretch
     ffmpeg = find_ffmpeg(cfg)
     make = session_factory(cfg, conn, ffmpeg=ffmpeg, ytdlp=find_ytdlp())
+    compiler = _compiler(cfg, client, conn, streamers)
     watcher = Watcher(cfg=cfg, client=client, conn=conn, streamers=streamers, writer=writer, make_session=make,
                       allow_non_gta=args.allow_non_gta,
                       clip_source=_clip_source(cfg, conn, streamers, required=False),
                       publisher=_held_publisher(cfg, client, conn, streamers),
-                      silent=lambda path, s, e: silent_stretch(ffmpeg, path, s, e))
+                      silent=lambda path, s, e: silent_stretch(ffmpeg, path, s, e),
+                      compiler=compiler, compilation_writer=_compilation_writer(cfg) if compiler else None)
     watcher.run(stop_after_s=args.minutes * 60 if args.minutes else None)
     print("\nStopped watching. Nothing is published. Review the clips with: python -m gta6clips clips")
+    return 0
+
+
+def _compiler(cfg, client, conn, streamers, *, required: bool = False):
+    """The driving-fail compiler, or None when compilations are off or there's no Claude key."""
+    from .compilation import CompilationSettings, Compiler, grab_frames, stitch
+    from .llm.fails import ClaudeFailJudge
+
+    settings = CompilationSettings.from_config(cfg)
+    if not settings.enabled and not required:
+        return None
+    if not env("ANTHROPIC_API_KEY"):
+        log.warning("Compilations are off: they need ANTHROPIC_API_KEY in .env.")
+        return None
+    ffmpeg = find_ffmpeg(cfg)
+    return Compiler(cfg=cfg, conn=conn, client=client, streamers=streamers,
+                    judge=ClaudeFailJudge(model=settings.judge_model, effort=settings.judge_effort),
+                    frames=lambda path, s, e, n: grab_frames(ffmpeg, path, s, e, n),
+                    cut=lambda parts, dest: stitch(ffmpeg, parts, dest), windows_dir=cfg.path("paths.windows"))
+
+
+def _compilation_writer(cfg):
+    from .compilation import CompilationSettings
+    from .llm import compilation_title_writer
+
+    s = CompilationSettings.from_config(cfg)
+    return compilation_title_writer(model=s.title_model, effort=s.title_effort)
+
+
+def _compile(cfg, client, conn, streamers, args) -> int:
+    from .compilation import CompilationSettings, Compiler, plan_parts
+
+    settings = CompilationSettings.from_config(cfg)
+    if args.dry_run:
+        # No Claude calls: what's been found so far, and what would go in.
+        dry = Compiler(cfg=cfg, conn=conn, client=client, streamers=streamers, judge=None, frames=None, cut=None,
+                       windows_dir=cfg.path("paths.windows"))
+        for streamer in dry._streamers():
+            waiting = len(dry.unchecked(streamer))
+            parts = plan_parts(dry.available(streamer), settings)
+            print(f"{streamer.name}: {waiting} clip(s) not checked yet; {len(parts)} usable fail(s) "
+                  f"(a compilation needs {settings.min_fails})")
+            for p in parts:
+                print(f"  clip {p.clip_id}  strength {p.strength}  {p.seconds:4.1f} s  {p.kind}: {p.note}")
+        return 0
+    compiler = _compiler(cfg, client, conn, streamers, required=True)
+    if compiler is None:
+        print("Compilations need ANTHROPIC_API_KEY in .env.", file=sys.stderr)
+        return 2
+    if args.drop:
+        try:
+            comp = compiler.drop(args.drop)
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            return 1
+        print(f"Clip {args.drop} is left out." + (f" Compilation {comp} queued without it." if comp else
+              " Not enough fails left for a compilation yet."))
+        return 0
+    run = compiler.run_once()
+    print(f"Checked {run.judged} clip(s): {run.fails} driving fail(s).")
+    for comp in run.queued:
+        print(f"Compilation {comp} queued: the running watcher sends it to Clips Kitty, then it's on the "
+              "review page.")
+    if not run.queued:
+        print("No compilation yet (not enough unused fails). Run with --dry-run to see what's there.")
     return 0
