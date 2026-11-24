@@ -13,6 +13,8 @@ paths:
   windows: data/windows
   # Live recordings (1-minute pieces, deleted after live.retention_hours) and their chat.
   recordings: data/live
+  # Edited videos (python -m gta6clips edit), with each one's edit plan next to it.
+  edits: data/edits
 
 clipskitty:
   # Clips Kitty's local API. Must stay on 127.0.0.1 / localhost: it has no
@@ -179,6 +181,13 @@ compilations:
     before_seconds: 45         # looked at before chat's reaction (chat comes after the crash)
     after_seconds: 10
     frames: 10
+
+# The Claude editor (2026-11-24). Step 1, built: the engine that renders an edit plan on a clip
+# Clips Kitty made (punch-in zooms on the webcam or game, shake, slow replays, freeze frames, text,
+# a hook, flashes); `edit CLIP [--plan FILE]`. Step 2 has Claude write the plans; it stops for the week
+# once weekly_budget_usd of Claude calls is spent. Nothing edited is uploaded yet.
+editor:
+  weekly_budget_usd: 10
 
 # Phase 4: the review page (python -m gta6clips review). Only ever on 127.0.0.1.
 review:

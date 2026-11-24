@@ -82,6 +82,12 @@ def _parser() -> argparse.ArgumentParser:
     hunt.add_argument("urls", nargs="*", help="stream links (default: the GTA 6 streams of compilations.streamers)")
     hunt.add_argument("--no-build", action="store_true", help="only find the fails; don't build a compilation")
 
+    ed = sub.add_parser("edit", help="edit a clip Clips Kitty rendered: punch-in zooms, replays, text (the editor's "
+                                     "engine; nothing is uploaded)")
+    ed.add_argument("clip", type=int, help="the Clips Kitty clip id")
+    ed.add_argument("--plan", help="an edit plan (JSON); without it a sample plan is made from the loud moments")
+    ed.add_argument("--out", help="where to write the edited video (default: data/edits/clip<id>_<n>.mp4)")
+
     review = sub.add_parser("review", help="open the review page: watch clips, pick titles, approve or reject "
                                            "(Phase 4)")
     review.add_argument("--port", type=int, help="override review.port in config.yaml")
@@ -177,6 +183,8 @@ def main(argv: list[str] | None = None) -> int:
             return _publish(cfg, client, conn, streamers, args)
         if args.command == "compile":
             return _compile(cfg, client, conn, streamers, args)
+        if args.command == "edit":
+            return _edit(cfg, client, conn, args)
         if args.command == "hunt":
             return _hunt(cfg, client, conn, streamers, args)
         if args.command == "review":
@@ -699,4 +707,74 @@ def _hunt(cfg, client, conn, streamers, args) -> int:
         print(f"Compilation {comp} queued: the running watcher sends it to Clips Kitty, then it's on the review page.")
     if not built:
         print("Not enough fails for a compilation.")
+    return 0
+
+
+def sample_plan(moments, duration_s: float, title: str) -> dict:
+    """A plan made without Claude, to try the engine: the title as the hook, a punch-in on the webcam at
+    the loudest moment (shaking when it's very loud) with a flash, and a slow replay of what led up to it."""
+    import re
+
+    plan: dict = {"keep": [], "zooms": [], "replays": [], "freezes": [], "texts": [], "flashes": [], "notes": []}
+    hook = re.sub(r"\s*[|#].*$", "", title).strip()
+    if hook:
+        plan["hook"] = {"text": hook[:40], "seconds": 2.0}
+    if moments:
+        m = moments[0]
+        a, b = max(0.0, m.peak - 0.8), min(duration_s, m.peak + 1.7)
+        plan["zooms"].append({"start": a, "end": b, "target": "cam", "scale": 2.0, "shake": m.over_db >= 5.5})
+        plan["flashes"].append(m.peak)
+        ra, rb = max(0.0, m.peak - 3.0), min(duration_s, m.peak + 0.5)
+        if rb - ra >= 1.0:
+            plan["replays"].append({"start": ra, "end": rb, "speed": 0.5, "target": "game", "scale": 1.3,
+                                    "label": "RUN IT BACK", "after": b})
+        plan["notes"].append(f"punch-in on the loudest moment ({m.peak:.1f} s, {m.over_db:.0f} dB over normal)")
+    return plan
+
+
+def _edit(cfg, client, conn, args) -> int:
+    from pathlib import Path
+
+    from .editing import PlanError, RenderError, measure_moments, parse_plan, render
+
+    row = db.get_clip(conn, args.clip)
+    if row is None:
+        print(f"We don't track clip {args.clip}.", file=sys.stderr)
+        return 1
+    theirs = next((c for c in client.video_clips(row["ck_video_id"]) if int(c["id"]) == args.clip), None)
+    if theirs is None:
+        print(f"Clips Kitty doesn't have clip {args.clip} any more.", file=sys.stderr)
+        return 1
+    places = ((theirs.get("render_opts") or {}).get("gaming") or {}).get("places") or {}
+    cam_box = places.get("cam")
+    duration = float(theirs["end_s"]) - float(theirs["start_s"])
+    edits = cfg.path("paths.edits") if cfg.get("paths.edits") else cfg.base_dir / "data" / "edits"
+    source = edits / f"clip{args.clip}_source.mp4"
+    if not source.is_file():
+        client.download_media(args.clip, source)
+    ffmpeg = find_ffmpeg(cfg)
+    if args.plan:
+        data = json.loads(Path(args.plan).read_text(encoding="utf-8"))
+    else:
+        moments = measure_moments(ffmpeg, source)
+        for m in moments:
+            print(f"  loud at {m.peak:5.1f} s ({m.start:.1f}-{m.end:.1f} s), {m.over_db:.0f} dB over normal")
+        data = sample_plan(moments, duration, row["title"])
+    try:
+        plan = parse_plan(data, duration)
+    except PlanError as exc:
+        print(f"The plan isn't valid: {exc}", file=sys.stderr)
+        return 1
+    n = 1
+    while (edits / f"clip{args.clip}_{n}.mp4").exists():
+        n += 1
+    dest = Path(args.out) if args.out else edits / f"clip{args.clip}_{n}.mp4"
+    (dest.with_suffix(".plan.json")).parent.mkdir(parents=True, exist_ok=True)
+    dest.with_suffix(".plan.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+    try:
+        render(ffmpeg, source, plan, dest, duration_s=duration, cam_box=cam_box)
+    except RenderError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    print(f"Edited video: {dest}\nIts plan: {dest.with_suffix('.plan.json')}\nNothing was uploaded.")
     return 0

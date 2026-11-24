@@ -223,6 +223,17 @@ It refuses while a live stream is being recorded, because many YouTube reads at 
 
 The card's notes list the clips it's made from. `--drop` works until you approve it. Needs `ANTHROPIC_API_KEY` in `.env`; without it compilations are off and everything else runs as before.
 
+## The editor (step 1: the engine)
+
+The editor makes our Shorts look hand-edited: punch-in zooms on the peanut when he yells, a zoom with a shake and a flash on a crash, a slow "RUN IT BACK" replay, a freeze frame with a "BRUH", short captions, a hook in the first 2 seconds, and cuts that drop dead air. It works on the vertical video Clips Kitty rendered and writes a new file in `data\edits`. Nothing is uploaded.
+
+```powershell
+.venv\Scripts\python.exe -m gta6clips edit 171                     # a sample edit, from the clip's loud moments
+.venv\Scripts\python.exe -m gta6clips edit 171 --plan my.plan.json # an edit plan written by hand (or by Claude, next)
+```
+
+Each edit is described by a plan (JSON): `keep` ranges, `zooms` (target `cam`, `game` or a `box`, `scale`, `shake`), `replays` (range, `speed`, `label`), `freezes`, `texts` (`top`/`middle`/`bottom`, size `s`/`m`/`l`), `flashes` and a `hook`, all in seconds of the Clips Kitty clip. Each edit's plan is saved next to it. Next: Claude writes these plans itself (step 2), within `editor.weekly_budget_usd` ($10).
+
 ## Clip length and the quality check
 
 Clips Kitty's own moment finders kept making 12–25 s clips that cut the story short. So this repo ships a small Clips Kitty plugin, `plugins\exact-moments` (no network; it only reads the transcript). We tell it the exact range and it makes one clip of that range, moving each end up to 4 s to a sentence break. Clips Kitty still does the split layout, captions, titles and rendering. The range is:
