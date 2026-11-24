@@ -47,7 +47,7 @@ clipskitty:
   # Options sent with every job.
   job:
     gaming: true           # Gaming / Reaction layout: webcam + game
-    captions: true
+    captions: false        # no burned-in captions (owner, 2026-11-23)
     max_clips: 8           # per video in Phase 1 (a whole VOD); live windows will use 1-2
     focus: >-
       Funny or wild GTA 6 moments built around the streamer: his out-of-pocket
