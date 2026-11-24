@@ -35,6 +35,7 @@ log = logging.getLogger(__name__)
 STREAM_SUFFIX = "@compilations"
 KIND = "driving fails"
 REVIEWED_ALREADY = ("approved", "published")
+HD_PAD_S = 5.0   # a finished stream's fail is downloaded with this much extra each side
 
 
 @dataclass(frozen=True)
@@ -91,12 +92,18 @@ class Part:
     strength: int
     kind: str
     note: str
-    source: str           # what makes two parts the same moment (see _same_moment)
+    source: str           # the YouTube video it's from (see _same_moment)
     abs_start: float | None
+    vod_id: int | None = None   # a fail found in a finished stream (vod_fails); path is None until downloaded
 
     @property
     def seconds(self) -> float:
         return self.end_s - self.start_s
+
+    @property
+    def label(self) -> str:
+        """How the owner names it for --drop: the clip id, or v<id> for one found in a finished stream."""
+        return f"v{self.vod_id}" if self.vod_id is not None else str(self.clip_id)
 
 
 @dataclass
@@ -138,6 +145,10 @@ def _same_moment(a: Part, b: Part) -> bool:
     """Two clips of one moment (a widened or re-rendered copy, or overlapping windows)."""
     if a.abs_start is not None and b.abs_start is not None:
         return a.source == b.source and a.abs_start < b.abs_start + b.seconds and b.abs_start < a.abs_start + a.seconds
+    if a.vod_id is not None and b.vod_id is not None:
+        return a.source == b.source and a.start_s < b.end_s and b.start_s < a.end_s
+    if a.path is None or b.path is None:
+        return False
     return _base(str(a.path)) == _base(str(b.path)) and a.start_s < b.end_s and b.start_s < a.end_s
 
 
@@ -182,7 +193,8 @@ Framer = Callable[[Path, float, float, int], list[tuple[float, bytes]]]
 class Compiler:
     def __init__(self, *, cfg: Config, conn: sqlite3.Connection, client: ClipsKittyClient,
                  streamers: list[Streamer], judge: FailJudge, frames: Framer, cut: Cutter,
-                 windows_dir: Path, clock: Callable[[], float] | None = None):
+                 windows_dir: Path, clock: Callable[[], float] | None = None,
+                 fetch: Callable[[Part, Path], Path] | None = None):
         self.cfg = cfg
         self.conn = conn
         self.client = client
@@ -191,6 +203,9 @@ class Compiler:
         self.frames = frames
         self.cut = cut
         self.windows_dir = windows_dir
+        # Downloads a finished stream's fail in HD: (part, dest) -> the file, holding
+        # [start_s - HD_PAD_S, end_s + HD_PAD_S] of the stream.
+        self.fetch = fetch
         self.settings = CompilationSettings.from_config(cfg)
         self.clock = clock or (lambda: datetime.now(timezone.utc).timestamp())
 
@@ -271,10 +286,12 @@ class Compiler:
             (row["w_stream_id"], t0 + start, t0 + end + CHAT_LAG_S))]
 
     # -- building ----------------------------------------------------------------------
-    def available(self, streamer: Streamer) -> list[Part]:
+    def available(self, streamer: Streamer, include_vods: bool = False) -> list[Part]:
+        """Unused fails: from our clips (made in the last lookback_days), and with include_vods also
+        the ones `hunt` found in finished streams (any age)."""
         rows = self.conn.execute(
-            "SELECT f.*, w.local_path, w.start_utc AS w_start_utc, w.stream_id AS w_stream_id FROM fail_checks f"
-            " JOIN windows w ON w.id = f.window_id"
+            "SELECT f.*, w.local_path, w.start_utc AS w_start_utc, s.video_id AS s_video_id FROM fail_checks f"
+            " JOIN windows w ON w.id = f.window_id JOIN streams s ON s.id = w.stream_id"
             " WHERE f.streamer = ? AND f.is_fail = 1 AND f.excluded = 0 AND f.compilation_id IS NULL"
             " AND f.checked_at >= ?", (streamer.name, self._since())).fetchall()
         s = self.settings
@@ -288,15 +305,82 @@ class Compiler:
             abs_start = float(r["w_start_utc"]) + start if r["w_start_utc"] is not None else None
             parts.append(Part(clip_id=int(r["ck_clip_id"]), path=path, start_s=start, end_s=end,
                               strength=int(r["strength"]), kind=r["kind"], note=r["note"],
-                              source=str(r["w_stream_id"]), abs_start=abs_start))
+                              source=str(r["s_video_id"]).split("@")[0], abs_start=abs_start))
+        if include_vods:
+            for r in self.conn.execute(
+                    "SELECT f.*, s.start_utc AS s_start_utc FROM vod_fails f"
+                    " LEFT JOIN streams s ON s.video_id = f.video_id"
+                    " WHERE f.streamer = ? AND f.is_fail = 1 AND f.excluded = 0 AND f.compilation_id IS NULL",
+                    (streamer.name,)):
+                start = max(0.0, float(r["start_s"]) - s.lead_s)
+                end = min(float(r["end_s"]) + s.tail_s, start + s.max_part_s)
+                abs_start = float(r["s_start_utc"]) + start if r["s_start_utc"] is not None else None
+                parts.append(Part(clip_id=0, path=None, start_s=start, end_s=end, strength=int(r["strength"]),
+                                  kind=r["kind"], note=r["note"], source=r["video_id"], abs_start=abs_start,
+                                  vod_id=int(r["id"])))
         return parts
 
-    def build(self, streamer: Streamer) -> int | None:
+    def _download(self, part: Part) -> Part | None:
+        """A finished stream's fail, downloaded in HD (once), as a part of that file."""
+        row = self.conn.execute("SELECT hd_path FROM vod_fails WHERE id = ?", (part.vod_id,)).fetchone()
+        path = Path(row["hd_path"]) if row and row["hd_path"] else None
+        if path is None or not path.is_file():
+            if self.fetch is None:
+                return None
+            dest = self.windows_dir / f"vodfail_{part.source}_{int(part.start_s)}"
+            try:
+                path = self.fetch(part, dest)
+            except Exception as exc:   # one download failing mustn't stop the rest
+                log.warning("Couldn't download fail v%s (%s at %.0f s): %s", part.vod_id, part.source,
+                            part.start_s, exc)
+                return None
+            self.conn.execute("UPDATE vod_fails SET hd_path = ? WHERE id = ?", (str(path), part.vod_id))
+            self.conn.commit()
+        start = min(HD_PAD_S, part.start_s)
+        return replace(part, path=path, start_s=start, end_s=start + part.seconds)
+
+    def _plan_ready(self, streamer: Streamer, include_vods: bool, settings: CompilationSettings) -> list[Part]:
+        """plan_parts, with the finished streams' fails downloaded; one that can't be is planned without."""
+        pool = self.available(streamer, include_vods)
+        while True:
+            parts = plan_parts(pool, settings)
+            if len(parts) < settings.min_fails:
+                return []
+            ready = []
+            for p in parts:
+                got = self._download(p) if p.vod_id is not None else p
+                if got is None:
+                    pool = [x for x in pool if not (x.vod_id == p.vod_id and x.clip_id == p.clip_id)]
+                    break
+                ready.append(got)
+            else:
+                return ready
+
+    def build(self, streamer: Streamer, include_vods: bool = False, *, settings: CompilationSettings | None = None,
+              kind: str = KIND) -> int | None:
         """Queues a compilation when there are enough fails. Returns its id."""
         require_permission(streamer)
-        parts = plan_parts(self.available(streamer), self.settings)
-        if len(parts) < self.settings.min_fails:
-            return None
+        parts = self._plan_ready(streamer, include_vods, settings or self.settings)
+        return self._queue(streamer, parts, kind) if parts else None
+
+    def build_top(self, streamer: Streamer, *, shorts: int = 3, per: int = 5, include_vods: bool = True) -> list[int]:
+        """'Top 5' Shorts: the best shorts*per distinct fails, dealt out in turn (1st, 4th, 7th... to the
+        first Short), so every Short opens with one of the very best. Fewer Shorts when there are fewer fails."""
+        require_permission(streamer)
+        wide = replace(self.settings, max_fails=shorts * per, min_fails=per, max_total_s=1e9)
+        best = self._plan_ready(streamer, include_vods, wide)
+        count = min(shorts, len(best) // per)
+        out = []
+        for i in range(count):
+            group = best[i::count][:per]
+            total = sum(p.seconds for p in group)
+            if total > self.settings.max_total_s:   # shorten every part evenly to fit
+                k = self.settings.max_total_s / total
+                group = [replace(p, end_s=p.start_s + p.seconds * k) for p in group]
+            out.append(self._queue(streamer, group, f"top {per} driving fails"))
+        return out
+
+    def _queue(self, streamer: Streamer, parts: list[Part], kind: str) -> int:
         n = 1 + self.conn.execute("SELECT COUNT(*) FROM compilations WHERE streamer = ?",
                                   (streamer.name,)).fetchone()[0]
         handle = streamer.clipskitty_creator
@@ -307,24 +391,27 @@ class Compiler:
                                   streamer=streamer.name, url=streamer.channel_url,
                                   title=f"{streamer.name} compilations", start_utc=None, duration_s=None)
         strength = sum(p.strength for p in parts) / len(parts)
-        title = f"{streamer.name} GTA 6 {KIND} compilation"
+        title = f"{streamer.name} GTA 6 {kind}"
         window_id = db.add_window(self.conn, streamer=streamer.name, source_url=str(dest), source_title=title,
                                   ck_job_id=None, ck_video_id=None, state="planned", stream_id=stream["id"],
                                   offset_start_s=0.0, offset_end_s=total, score=3 + strength / 2,
-                                  reasons=f"Compilation of {len(parts)} {KIND}")
+                                  reasons=f"Compilation: {kind} ({len(parts)})")
         db.update_window(self.conn, window_id, local_path=str(dest), finder="exact", moment_start_s=0.0,
                          moment_end_s=total)
-        parts_json = [{"clip": p.clip_id, "start_s": p.start_s, "end_s": p.end_s, "kind": p.kind, "note": p.note,
+        parts_json = [{"clip": p.clip_id or None, "vod": p.vod_id, "label": p.label, "video": p.source,
+                       "start_s": p.start_s, "end_s": p.end_s, "kind": p.kind, "note": p.note,
                        "strength": p.strength} for p in parts]
         cur = self.conn.execute("INSERT INTO compilations (streamer, kind, window_id, path, parts, created_at)"
                                 " VALUES (?, ?, ?, ?, ?, ?)",
-                                (streamer.name, KIND, window_id, str(dest), json.dumps(parts_json), db._now()))
+                                (streamer.name, kind, window_id, str(dest), json.dumps(parts_json), db._now()))
         comp_id = int(cur.lastrowid)
         self.conn.executemany("UPDATE fail_checks SET compilation_id = ? WHERE ck_clip_id = ?",
-                              [(comp_id, p.clip_id) for p in parts])
+                              [(comp_id, p.clip_id) for p in parts if p.vod_id is None])
+        self.conn.executemany("UPDATE vod_fails SET compilation_id = ? WHERE id = ?",
+                              [(comp_id, p.vod_id) for p in parts if p.vod_id is not None])
         self.conn.commit()
         log.info("Compilation %d of %s: %d %s, %.0f s (clips %s), queued for Clips Kitty", comp_id, streamer.name,
-                 len(parts), KIND, total, ", ".join(str(p.clip_id) for p in parts))
+                 len(parts), kind, total, ", ".join(p.label for p in parts))
         return comp_id
 
     def run_once(self) -> CompileRun:
@@ -338,16 +425,25 @@ class Compiler:
                 run.queued.append(comp)
         return run
 
-    def drop(self, clip_id: int) -> int | None:
-        """The owner doesn't want this fail: it leaves its compilation, whose clip is rejected, and the
-        compilation is built again from the rest (plus the next fail). Returns the new compilation's id."""
-        row = self.conn.execute("SELECT * FROM fail_checks WHERE ck_clip_id = ?", (clip_id,)).fetchone()
+    def drop(self, label: str | int) -> int | None:
+        """The owner doesn't want this fail (a clip id, or v<id> for one found in a finished stream): it
+        leaves its compilation, whose clip is rejected, and the compilation is built again from the rest
+        (plus the next fail). Returns the new compilation's id."""
+        label = str(label).strip()
+        vod = label.lower().startswith("v")
+        table, key = ("vod_fails", "id") if vod else ("fail_checks", "ck_clip_id")
+        try:
+            ident = int(label[1:] if vod else label)
+        except ValueError:
+            raise ValueError(f"{label!r} isn't a clip id or a v<number> fail") from None
+        row = self.conn.execute(f"SELECT * FROM {table} WHERE {key} = ?", (ident,)).fetchone()
         if row is None or not row["is_fail"]:
-            raise ValueError(f"clip {clip_id} isn't a driving fail we found")
+            raise ValueError(f"{label} isn't a driving fail we found")
         comp_id = row["compilation_id"]
         streamer = next((s for s in self.streamers if s.name == row["streamer"]), None)
         if streamer is None:
             raise ValueError(f"{row['streamer']} isn't in streamers.yaml")
+        had_vods = False
         if comp_id is not None:
             comp = self.conn.execute("SELECT * FROM compilations WHERE id = ?", (comp_id,)).fetchone()
             made = self.conn.execute("SELECT * FROM clips WHERE window_id = ?", (comp["window_id"],)).fetchall()
@@ -360,14 +456,23 @@ class Compiler:
             for c in made:
                 if c["status"] != "rejected":
                     db.set_clip_status(self.conn, c["ck_clip_id"], "rejected",
-                                       note=f"compilation rebuilt without clip {clip_id}")
+                                       note=f"compilation rebuilt without {label}")
             if window is not None and window["state"] == "planned":
                 db.update_window(self.conn, window["id"], state="failed", error="rebuilt without a fail")
+            old_parts = json.loads(comp["parts"] or "[]")
+            had_vods = any(p.get("vod") for p in old_parts)
+            again = replace(self.settings, max_fails=len(old_parts), min_fails=min(self.settings.min_fails,
+                                                                                    len(old_parts)))
+            old_kind = comp["kind"]
             self.conn.execute("UPDATE compilations SET state = 'dropped' WHERE id = ?", (comp_id,))
             self.conn.execute("UPDATE fail_checks SET compilation_id = NULL WHERE compilation_id = ?", (comp_id,))
-        self.conn.execute("UPDATE fail_checks SET excluded = 1 WHERE ck_clip_id = ?", (clip_id,))
+            self.conn.execute("UPDATE vod_fails SET compilation_id = NULL WHERE compilation_id = ?", (comp_id,))
+        self.conn.execute(f"UPDATE {table} SET excluded = 1 WHERE {key} = ?", (ident,))
         self.conn.commit()
-        return self.build(streamer) if comp_id is not None else None
+        if comp_id is None:
+            return None
+        return self.build(streamer, include_vods=had_vods, settings=again, kind=old_kind)
+
 
 def parts_context(parts: list[dict]) -> str:
     """The compilation's moments in order, for the title writer."""
@@ -379,3 +484,8 @@ def compilation_parts(conn: sqlite3.Connection, window_id: int) -> list[dict]:
     """The moments of the compilation sent as this window, in order ([] for any other window)."""
     row = conn.execute("SELECT parts FROM compilations WHERE window_id = ?", (window_id,)).fetchone()
     return json.loads(row["parts"]) if row else []
+
+
+def compilation_kind(conn: sqlite3.Connection, window_id: int) -> str:
+    row = conn.execute("SELECT kind FROM compilations WHERE window_id = ?", (window_id,)).fetchone()
+    return row["kind"] if row else KIND

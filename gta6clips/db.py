@@ -129,6 +129,27 @@ CREATE TABLE IF NOT EXISTS fail_checks (
     checked_at     TEXT NOT NULL
 );
 
+-- Driving fails found in finished streams (crash_hunt.py), by where chat reacted (peak_s).
+CREATE TABLE IF NOT EXISTS vod_fails (
+    id             INTEGER PRIMARY KEY,
+    streamer       TEXT NOT NULL,
+    video_id       TEXT NOT NULL,
+    url            TEXT NOT NULL,
+    peak_s         REAL NOT NULL,
+    is_fail        INTEGER NOT NULL,
+    start_s        REAL,                  -- the fail, in seconds of the stream
+    end_s          REAL,
+    strength       INTEGER NOT NULL DEFAULT 0,
+    kind           TEXT NOT NULL DEFAULT '',
+    note           TEXT NOT NULL DEFAULT '',
+    model          TEXT NOT NULL DEFAULT '',
+    hd_path        TEXT NOT NULL DEFAULT '',  -- its HD cut, once downloaded
+    compilation_id INTEGER,
+    excluded       INTEGER NOT NULL DEFAULT 0,
+    checked_at     TEXT NOT NULL,
+    UNIQUE(video_id, peak_s)
+);
+
 CREATE TABLE IF NOT EXISTS compilations (
     id          INTEGER PRIMARY KEY,
     streamer    TEXT NOT NULL,

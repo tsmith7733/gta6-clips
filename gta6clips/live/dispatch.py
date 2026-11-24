@@ -24,7 +24,7 @@ from ..exact import CHAT_LAG_S, ExactSettings, chat_notes, twitch_notes
 from ..llm import TitleWriter
 from ..postprocess import postprocess_video
 from ..scoring import review_score
-from ..compilation import compilation_parts, is_compilation_stream, parts_context
+from ..compilation import compilation_kind, compilation_parts, is_compilation_stream, parts_context
 from ..scan import SPOILER_CHAT_MARGIN_S, window_job_options
 from ..spoilers import KeywordSpoilerCheck
 from ..streamers import PermissionDenied, Streamer
@@ -310,7 +310,9 @@ class Dispatcher:
             return twitch_notes(row["source_title"])
         if is_compilation_stream(row["stream_video_id"]):
             parts = compilation_parts(self.conn, row["id"])
-            return [f"A compilation of {len(parts)} driving fails, one after another"] +                 [f"{p.get('kind')}: {p.get('note')}" for p in parts[:4]]
+            kind = compilation_kind(self.conn, row["id"])
+            return [f"A '{kind}' compilation of {len(parts)} moments, one after another"] + \
+                [f"{p.get('kind')}: {p.get('note')}" for p in parts[:4]]
         if row["start_utc"] is None or row["moment_start_s"] is None:
             return []
         start = float(row["start_utc"]) + float(row["moment_start_s"])
@@ -368,14 +370,17 @@ class Dispatcher:
             outcomes = postprocess_video(self.client, self.conn, self.cfg, streamer, video_id, writer,
                                          window_id=row["id"], source_title=row["source_title"],
                                          spoilers=self.spoilers, chat_for=chat_for,
-                                         score=window_clip_score(row), context=parts_context(parts),
+                                         score=window_clip_score(row),
+                                         context=(f"This Short is a '{compilation_kind(self.conn, row['id'])}' "
+                                                  f"compilation. Its moments, in order:\n{parts_context(parts)}"
+                                                  if compiled else ""),
                                          check_length=not compiled)
             if compiled:
                 for o in outcomes:
                     if not o.skipped:
                         db.add_clip_note(self.conn, o.ck_clip_id, "compilation of clips " + ", ".join(
-                            f"{p['clip']} ({p.get('kind')})" for p in parts) +
-                            ". To drop one: python -m gta6clips compile --drop <clip>")
+                            f"{p.get('label') or p['clip']} ({p.get('kind')})" for p in parts) +
+                            ". To drop one: python -m gta6clips compile --drop <clip or v-number>")
             if not outcomes:
                 if self._render_failed(row):
                     if self._retry_render(row):

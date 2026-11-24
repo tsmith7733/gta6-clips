@@ -66,8 +66,17 @@ def _parser() -> argparse.ArgumentParser:
                                           "when there are enough (the running watcher sends it to Clips Kitty)")
     comp.add_argument("--dry-run", action="store_true",
                       help="show the fails found so far and what a compilation would hold; no Claude calls")
-    comp.add_argument("--drop", type=int, metavar="CLIP",
-                      help="leave this clip's fail out: its compilation is rejected and built again without it")
+    comp.add_argument("--top", type=int, metavar="N",
+                      help="build 'top N driving fails' Shorts from the best unused fails (clips and hunted streams)")
+    comp.add_argument("--shorts", type=int, default=3, help="with --top: how many Shorts (default 3)")
+    comp.add_argument("--drop", metavar="CLIP",
+                      help="leave this fail out (a clip id, or v<number> for one found by hunt): its compilation "
+                           "is rejected and built again without it")
+
+    hunt = sub.add_parser("hunt", help="find driving fails in finished GTA 6 streams (chat + Claude) and build a "
+                                       "best-of compilation from them and the clips' fails")
+    hunt.add_argument("urls", nargs="*", help="stream links (default: the GTA 6 streams of compilations.streamers)")
+    hunt.add_argument("--no-build", action="store_true", help="only find the fails; don't build a compilation")
 
     review = sub.add_parser("review", help="open the review page: watch clips, pick titles, approve or reject "
                                            "(Phase 4)")
@@ -164,6 +173,8 @@ def main(argv: list[str] | None = None) -> int:
             return _publish(cfg, client, conn, streamers, args)
         if args.command == "compile":
             return _compile(cfg, client, conn, streamers, args)
+        if args.command == "hunt":
+            return _hunt(cfg, client, conn, streamers, args)
         if args.command == "review":
             conn.close()
             return _review(cfg, client, streamers, args)
@@ -510,7 +521,28 @@ def _compiler(cfg, client, conn, streamers, *, required: bool = False):
     return Compiler(cfg=cfg, conn=conn, client=client, streamers=streamers,
                     judge=ClaudeFailJudge(model=settings.judge_model, effort=settings.judge_effort),
                     frames=lambda path, s, e, n: grab_frames(ffmpeg, path, s, e, n),
-                    cut=lambda parts, dest: stitch(ffmpeg, parts, dest), windows_dir=cfg.path("paths.windows"))
+                    cut=lambda parts, dest: stitch(ffmpeg, parts, dest), windows_dir=cfg.path("paths.windows"),
+                    fetch=_hd_fetch(cfg, conn, streamers))
+
+
+def _hd_fetch(cfg, conn, streamers):
+    """Downloads a finished stream's fail in HD, a few seconds each side (one yt-dlp download each, spaced
+    out so YouTube doesn't take the PC for a bot)."""
+    import time
+
+    from .compilation import HD_PAD_S
+    from .crash_hunt import stream_source
+
+    fetcher = YtDlpFetcher(ffmpeg=find_ffmpeg(cfg), cache_dir=cfg.path("paths.cache"),
+                           video_format=str(cfg.get("windows.video_format") or "b"))
+
+    def fetch(part, dest):
+        info = stream_source(conn, part.source)
+        streamer = next(s for s in streamers if s.name == conn.execute(
+            "SELECT streamer FROM streams WHERE video_id = ?", (part.source,)).fetchone()[0])
+        time.sleep(10)
+        return fetcher.cut(info, streamer, max(0.0, part.start_s - HD_PAD_S), part.end_s + HD_PAD_S, dest)
+    return fetch
 
 
 def _compilation_writer(cfg):
@@ -541,6 +573,16 @@ def _compile(cfg, client, conn, streamers, args) -> int:
     if compiler is None:
         print("Compilations need ANTHROPIC_API_KEY in .env.", file=sys.stderr)
         return 2
+    if args.top:
+        made = []
+        for streamer in compiler._streamers():
+            made += compiler.build_top(streamer, shorts=args.shorts, per=args.top, include_vods=True)
+        for comp in made:
+            print(f"Top {args.top} compilation {comp} queued: the running watcher sends it to Clips Kitty, then it's "
+                  "on the review page.")
+        if not made:
+            print(f"Not enough unused fails for a top {args.top}.")
+        return 0
     if args.drop:
         try:
             comp = compiler.drop(args.drop)
@@ -557,4 +599,83 @@ def _compile(cfg, client, conn, streamers, args) -> int:
               "review page.")
     if not run.queued:
         print("No compilation yet (not enough unused fails). Run with --dry-run to see what's there.")
+    return 0
+
+
+def _recording_now(conn) -> bool:
+    """A live stream is being recorded (a piece written in the last 5 minutes)."""
+    import time
+    row = conn.execute("SELECT MAX(end_utc) FROM segments").fetchone()
+    return bool(row and row[0] and time.time() - float(row[0]) < 300)
+
+
+def _gta_streams(cfg, streamers) -> list[str]:
+    """The finished GTA 6 streams of compilations.streamers' YouTube channels (one flat listing each)."""
+    import yt_dlp
+
+    from .compilation import CompilationSettings
+    from .sources import looks_like_gta6
+
+    urls = []
+    for name in CompilationSettings.from_config(cfg).streamers:
+        s = next((x for x in streamers if x.name == name and x.permission and x.platform == "youtube"), None)
+        if s is None:
+            continue
+        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "extract_flat": True,
+                               "playlistend": 60}) as ydl:
+            listing = ydl.extract_info(s.channel_url.rstrip("/") + "/streams", download=False)
+        for e in listing.get("entries") or []:
+            if e.get("live_status") == "was_live" and looks_like_gta6(e.get("title") or "",
+                                                                      cfg.get("gta6.keywords", [])):
+                urls.append(f"https://www.youtube.com/watch?v={e['id']}")
+    return urls
+
+
+def _hunt(cfg, client, conn, streamers, args) -> int:
+    import time
+
+    from .compilation import CompilationSettings
+    from .crash_hunt import FailHunter, HuntError, frames_from_url
+    from .llm.fails import ClaudeFailJudge
+
+    if _recording_now(conn):
+        print("A live stream is being recorded right now. Hunting reads a lot from YouTube, which could get the "
+              "recording blocked as a bot; run it once the stream is over.", file=sys.stderr)
+        return 1
+    if not env("ANTHROPIC_API_KEY"):
+        print("hunt needs ANTHROPIC_API_KEY in .env.", file=sys.stderr)
+        return 2
+    settings = CompilationSettings.from_config(cfg)
+    ffmpeg = find_ffmpeg(cfg)
+    fetcher = YtDlpFetcher(ffmpeg=ffmpeg, cache_dir=cfg.path("paths.cache"),
+                           video_format=str(cfg.get("windows.video_format") or "b"))
+    hunter = FailHunter(cfg=cfg, conn=conn, streamers=streamers,
+                        judge=ClaudeFailJudge(model=settings.judge_model, effort=settings.judge_effort),
+                        fetcher=fetcher,
+                        frames=lambda url, headers, s, e, n: frames_from_url(ffmpeg, url, headers, s, e, n))
+    urls = args.urls or _gta_streams(cfg, streamers)
+    print(f"Looking for driving fails in {len(urls)} stream(s).")
+    for i, url in enumerate(urls):
+        if i:
+            time.sleep(30)   # spread the YouTube lookups out
+        try:
+            result = hunter.hunt(url)
+        except (HuntError, NotGta6, SourceError, DownloadError, ScanError) as exc:
+            print(f"  {url}: {exc}")
+            continue
+        print(f"  {result.title[:70]}: {result.candidates} moment(s) checked, {len(result.fails)} fail(s)")
+        for start, strength, note in sorted(result.fails, key=lambda f: -f[1]):
+            print(f"    {clock(start)}  strength {strength}  {note}")
+    if args.no_build:
+        return 0
+    compiler = _compiler(cfg, client, conn, streamers, required=True)
+    built = []
+    for streamer in compiler._streamers():
+        comp = compiler.build(streamer, include_vods=True)
+        if comp is not None:
+            built.append(comp)
+    for comp in built:
+        print(f"Compilation {comp} queued: the running watcher sends it to Clips Kitty, then it's on the review page.")
+    if not built:
+        print("Not enough fails for a compilation.")
     return 0

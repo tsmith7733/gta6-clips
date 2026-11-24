@@ -168,6 +168,15 @@ compilations:
   judge_effort: low
   title_model: claude-opus-5-5     # titles and description of each compilation, a few cents each
   title_effort: medium
+  # `hunt`: driving fails in finished streams. Chat replay finds where chat talks about crashing,
+  # Claude checks frames read straight from the stream (no full download), winners are downloaded in HD.
+  hunt:
+    max_candidates: 40         # per stream, strongest crash talk first
+    min_crash_hits: 4          # crash messages within 30 s
+    min_gap_seconds: 90
+    before_seconds: 45         # looked at before chat's reaction (chat comes after the crash)
+    after_seconds: 10
+    frames: 10
 
 # Phase 4: the review page (python -m gta6clips review). Only ever on 127.0.0.1.
 review:

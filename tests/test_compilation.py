@@ -137,7 +137,7 @@ def test_fails_become_a_compilation_on_the_review_page(cfg, ck, ck_state, conn, 
     body = ck_state.submissions[-1]
     total = sum(p["end_s"] - p["start_s"] for p in parts)
     assert body["pipeline"]["settings"]["ranges"] == f"0.0-{total:.1f}" and body["max_clips"] == 1
-    assert body["pipeline"]["settings"]["notes"].startswith("A compilation of 5 driving fails")
+    assert body["pipeline"]["settings"]["notes"].startswith("A 'driving fails' compilation of 5 moments")
     assert body["channel"] == "TheBurntPeanut"
     clip = db.clips_by_status(conn, "pending_review")
     clip = next(c for c in clip if c["ck_clip_id"] >= 800)
@@ -203,3 +203,71 @@ def test_stitch_joins_the_parts(tmp_path):
     hms = probe.split("Duration: ")[1].split(",")[0]
     h, m, s = hms.split(":")
     assert float(s) + 60 * int(m) == pytest.approx(7.0, abs=0.3)
+
+
+# -- fails in finished streams (hunt) -----------------------------------------------------------
+
+from gta6clips.crash_hunt import FailHunter, HuntSettings, crash_candidates
+from gta6clips.sources import SourceInfo
+
+
+def test_crash_candidates_need_crash_talk_not_just_laughs():
+    chat = [(100 + i, "LMAO") for i in range(30)]                                      # only laughs
+    chat += [(500 + i, m) for i, m in enumerate(["he crashed", "worst driver ever", "TOTALLED", "can't drive",
+                                                 "KEKW", "#1 driver", "lmao"])]
+    chat += [(540, "plane"), (2000, "nice car"), (2001, "crash"), (2002, "flip"), (2003, "wrecked")]   # weaker
+    found = crash_candidates(chat, 3000, HuntSettings(min_crash_hits=3))
+    assert [round(c.peak_s) for c in found] == [505, 2005]
+
+
+class FakeFetcher:
+    def chat(self, info, streamer):
+        return [(600.0 + i, m) for i, m in enumerate(["CRASHED", "worst driver", "he flipped it", "can't drive"] * 2)]
+
+
+def _vod_info(url):
+    return SourceInfo(url=url, platform="youtube", video_id="vod1", title="GTA 6 | DAY 2 | #1 GTA 6 DRIVER",
+                      description="", channel_name="TheBurntPeanut",
+                      channel_values=("https://www.youtube.com/@TheBurntPeanut",), duration=7200.0,
+                      start_utc=T0 - 7200, live_status="was_live")
+
+
+def test_hunted_fails_join_the_clips_fails_in_a_best_of(cfg, ck, conn, streamers, workdir):
+    _setup(conn, workdir, n=4)
+    judge = FakeJudge({1: FailVerdict(True, 30.0, 38.0, 10, "missed the jump", "flies off the ramp into a bus")})
+    hunter = FailHunter(cfg=cfg, conn=conn, streamers=streamers, judge=judge, fetcher=FakeFetcher(),
+                        frames=lambda url, h, s, e, n: [(1.0, b"jpeg")], resolve=lambda info, fmt: ("http://low", {}),
+                        probe_fn=_vod_info)
+    result = hunter.hunt("https://www.youtube.com/watch?v=vod1")
+    assert result.candidates == 1 and len(result.fails) == 1
+    assert hunter.hunt("https://www.youtube.com/watch?v=vod1").candidates == 0     # never judged twice
+    fetched = []
+
+    def fetch(part, dest):
+        fetched.append((part.source, part.start_s))
+        return _fake_cut([], dest.with_suffix(".mp4"))
+
+    comp = _compiler(cfg, conn, ck, streamers, workdir, FakeJudge(_fails(9, 8, 7, 6)))
+    comp.fetch = fetch
+    comp.run_once()
+    assert comp.build(comp._streamers()[0]) is None                     # 4 clip fails: not enough alone
+    comp_id = comp.build(comp._streamers()[0], include_vods=True)
+    parts = json.loads(conn.execute("SELECT parts FROM compilations WHERE id = ?", (comp_id,)).fetchone()[0])
+    assert parts[0]["label"].startswith("v") and parts[0]["strength"] == 10      # the best one leads
+    assert parts[0]["start_s"] == pytest.approx(5.0)                    # within its HD download
+    assert fetched == [("vod1", pytest.approx(605 - 45 + 30 - 1))]   # peak 605 s, 45 s looked at before it
+    assert comp.drop(parts[0]["label"]) is None                          # without it: 4 fails, too few again
+
+
+def test_top_five_shorts_share_out_the_best_fails(cfg, ck, conn, streamers, workdir):
+    _setup(conn, workdir, n=16)
+    strengths = [10, 10, 9, 9, 9, 8, 8, 8, 8, 7, 7, 7, 7, 6, 6, 6]
+    comp = _compiler(cfg, conn, ck, streamers, workdir, FakeJudge(_fails(*strengths)))
+    comp.judge_new(comp._streamers()[0], 99)
+    made = comp.build_top(comp._streamers()[0], shorts=3, per=5)
+    assert len(made) == 3
+    rows = [conn.execute("SELECT kind, parts FROM compilations WHERE id = ?", (c,)).fetchone() for c in made]
+    groups = [[p["strength"] for p in json.loads(r["parts"])] for r in rows]
+    assert groups == [[10, 9, 8, 7, 7], [10, 9, 8, 7, 6], [9, 8, 8, 7, 6]]     # 1st, 4th, 7th... to the first
+    assert all(r["kind"] == "top 5 driving fails" for r in rows)
+    assert comp.build_top(comp._streamers()[0], shorts=3, per=5) == []         # one fail left: none more

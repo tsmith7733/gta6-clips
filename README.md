@@ -212,6 +212,15 @@ For each streamer in `config.yaml → compilations.streamers` (The Burnt Peanut)
 .venv\Scripts\python.exe -m gta6clips compile --drop 152   # leave clip 152's fail out: the compilation is rebuilt without it
 ```
 
+To mine his finished streams for a best-of, run `hunt`. It reads each GTA 6 stream's chat replay for crash talk ("worst driver ever", "TOTALLED", "plane crashed"), has Claude Haiku check up to 40 of those moments per stream from frames read straight off YouTube's low-resolution stream (no full download), then downloads only the winners in HD and builds a compilation from the very best fails, mixed with the ones from your clips. Fails found this way are named `v<number>`.
+
+```powershell
+.venv\Scripts\python.exe -m gta6clips hunt                 # all his GTA 6 streams (one listing request)
+.venv\Scripts\python.exe -m gta6clips hunt <stream link>   # just this one
+```
+
+It refuses while a live stream is being recorded, because many YouTube reads at once can get the PC flagged as a bot and block the recording. A stream it already searched is skipped next time, except for moments it hasn't checked.
+
 The card's notes list the clips it's made from. `--drop` works until you approve it. Needs `ANTHROPIC_API_KEY` in `.env`; without it compilations are off and everything else runs as before.
 
 ## Clip length and the quality check
