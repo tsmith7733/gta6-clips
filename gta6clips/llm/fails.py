@@ -31,6 +31,9 @@ Answer:
 - is_fail: true only if the frames or transcript clearly show one.
 - start_s / end_s: where the fail itself happens, from the setup (a second or two before) to just \
 after his immediate reaction. Keep it short: usually 4-10 seconds. 0 and 0 when there's no fail.
+- impact_s: the one second where the crash, flip or splash itself happens (in a chain of wrecks, the \
+biggest one). Look at the frames: it must be a frame where the vehicle is visibly hitting, flipping, \
+landing or wrecked, not one where he's still driving normally. 0 when there's no fail.
 - strength: 1-10, how good it is for the compilation (10: spectacular or hilarious; 5: an ordinary \
 crash; under 4: barely a fail).
 - kind: two or three words (e.g. "head-on crash", "rolled the car", "missed the jump").
@@ -44,11 +47,12 @@ FAIL_SCHEMA = {
         "is_fail": {"type": "boolean"},
         "start_s": {"type": "number"},
         "end_s": {"type": "number"},
+        "impact_s": {"type": "number"},
         "strength": {"type": "integer"},
         "kind": {"type": "string"},
         "note": {"type": "string"},
     },
-    "required": ["is_fail", "start_s", "end_s", "strength", "kind", "note"],
+    "required": ["is_fail", "start_s", "end_s", "impact_s", "strength", "kind", "note"],
     "additionalProperties": False,
 }
 
@@ -74,6 +78,7 @@ class FailVerdict:
     strength: int
     kind: str
     note: str
+    impact_s: float | None = None   # within the clip: the crash itself
 
 
 class FailJudge(Protocol):
@@ -90,7 +95,12 @@ def parse_verdict(raw: str, duration_s: float) -> FailVerdict:
     start = max(0.0, min(float(data.get("start_s") or 0), duration_s))
     end = max(0.0, min(float(data.get("end_s") or 0), duration_s))
     is_fail = bool(data.get("is_fail")) and end - start >= 1.0
+    impact = data.get("impact_s")
+    impact = max(0.0, min(float(impact), duration_s)) if is_fail and impact not in (None, "") else None
+    if impact is not None and impact == 0.0 and start > 1.0:
+        impact = None   # "0" from a model that had nothing to say
     return FailVerdict(is_fail=is_fail, start_s=start if is_fail else 0.0, end_s=end if is_fail else 0.0,
+                       impact_s=impact,
                        strength=max(0, min(10, int(data.get("strength") or 0))) if is_fail else 0,
                        kind=" ".join(str(data.get("kind") or "").split())[:40],
                        note=" ".join(str(data.get("note") or "").split())[:160])

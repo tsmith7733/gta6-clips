@@ -161,6 +161,8 @@ compilations:
   min_strength: 6              # 1-10, Claude's rating
   lead_seconds: 1.0            # added around the fail Claude found
   tail_seconds: 1.5
+  before_impact_seconds: 6       # with the crash's own second known, a part is cut around it
+  after_impact_seconds: 4
   max_part_seconds: 10         # setup, the fail, his reaction
   max_seconds: 60              # the whole compilation
   frames: 8                    # frames of each clip Claude looks at

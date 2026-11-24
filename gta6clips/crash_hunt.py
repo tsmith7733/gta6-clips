@@ -210,9 +210,10 @@ class FailHunter:
             result.judged += 1
             self.conn.execute(
                 "INSERT OR REPLACE INTO vod_fails (streamer, video_id, url, peak_s, is_fail, start_s, end_s,"
-                " strength, kind, note, model, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " impact_s, strength, kind, note, model, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (streamer.name, info.video_id, info.url, round(c.peak_s), int(v.is_fail),
                  start + v.start_s if v.is_fail else None, start + v.end_s if v.is_fail else None,
+                 start + v.impact_s if v.is_fail and v.impact_s is not None else None,
                  v.strength, v.kind, v.note, self.judge.model, db._now()))
             self.conn.commit()
             if v.is_fail:
@@ -220,6 +221,49 @@ class FailHunter:
                 log.info("Driving fail at %s (%s, strength %d): %s", _clock(start + v.start_s), v.kind,
                          v.strength, v.note)
         return result
+
+
+def refine_frames(span_s: float) -> int:
+    """Frames for a second look at a marked fail: one every 2 s, 8 to 20."""
+    return int(max(8, min(20, span_s / 2)))
+
+
+def refine_vod_fails(conn: sqlite3.Connection, judge: FailJudge, frames: FrameReader,
+                     resolve: Callable[[SourceInfo, str], tuple[str, dict]], low_format: str) -> int:
+    """Second look at stream fails found before Claude named the crash's own second: with denser frames
+    over what it marked, the crash is found (or the fail is dropped). Returns how many were looked at."""
+    done = 0
+    rows = conn.execute("SELECT * FROM vod_fails WHERE is_fail = 1 AND impact_s IS NULL AND excluded = 0"
+                        " ORDER BY video_id").fetchall()
+    urls: dict[str, tuple[str, dict]] = {}
+    for r in rows:
+        if r["video_id"] not in urls:
+            urls[r["video_id"]] = resolve(stream_source(conn, r["video_id"]), low_format)
+        url, headers = urls[r["video_id"]]
+        start, end = max(0.0, float(r["start_s"]) - 4), float(r["end_s"]) + 4
+        try:
+            shots = frames(url, headers, start, end, refine_frames(end - start))
+            chat = [t for (t,) in conn.execute(
+                "SELECT text FROM chat_messages m JOIN streams s ON s.id = m.stream_id"
+                " WHERE s.video_id = ? AND m.offset_s BETWEEN ? AND ? ORDER BY m.offset_s",
+                (r["video_id"], start, end + 15))]
+            v = judge.judge(ClipEvidence(streamer=r["streamer"], duration_s=end - start, frames=shots,
+                                         transcript=[], chat=chat[-40:]))
+        except (HuntError, FailJudgeError, subprocess.TimeoutExpired) as exc:
+            log.warning("Couldn't look again at fail v%s: %s", r["id"], exc)
+            continue
+        done += 1
+        if not v.is_fail or v.impact_s is None:
+            conn.execute("UPDATE vod_fails SET is_fail = 0, note = ? WHERE id = ?",
+                         (f"second look: no crash found ({v.note})"[:300], r["id"]))
+            log.info("Fail v%s dropped on a second look: %s", r["id"], v.note)
+        else:
+            conn.execute("UPDATE vod_fails SET start_s = ?, end_s = ?, impact_s = ?, strength = ?, kind = ?,"
+                         " note = ?, hd_path = '', hd_start_s = NULL WHERE id = ?",
+                         (start + v.start_s, start + v.end_s, start + v.impact_s, v.strength, v.kind, v.note,
+                          r["id"]))
+        conn.commit()
+    return done
 
 
 def _clock(s: float) -> str:

@@ -50,6 +50,8 @@ class CompilationSettings:
     min_strength: int = 6
     lead_s: float = 1.0          # added before the fail Claude found (it already includes the setup)
     tail_s: float = 1.5          # and after it
+    before_impact_s: float = 6.0   # with the crash's own second known: the part is this much before it...
+    after_impact_s: float = 4.0    # ...and this much after (his reaction)
     max_part_s: float = 10.0
     max_total_s: float = 60.0
     frames: int = 8
@@ -73,6 +75,8 @@ class CompilationSettings:
             min_strength=int(s.get("min_strength", d.min_strength)),
             lead_s=float(s.get("lead_seconds", d.lead_s)),
             tail_s=float(s.get("tail_seconds", d.tail_s)),
+            before_impact_s=float(s.get("before_impact_seconds", d.before_impact_s)),
+            after_impact_s=float(s.get("after_impact_seconds", d.after_impact_s)),
             max_part_s=float(s.get("max_part_seconds", d.max_part_s)),
             max_total_s=float(s.get("max_seconds", d.max_total_s)),
             frames=int(s.get("frames", d.frames)),
@@ -139,6 +143,16 @@ def plan_parts(fails: list[Part], s: CompilationSettings) -> list[Part]:
         k = s.max_total_s / total
         chosen = [replace(p, end_s=p.start_s + p.seconds * k) for p in chosen]
     return chosen
+
+
+def part_range(start_s, end_s, impact_s, s: CompilationSettings) -> tuple[float, float]:
+    """The stretch of a fail that goes in a compilation: around the crash itself when Claude named its
+    second, else the end of what it marked (where a chain of wrecks ends), at most max_part_s."""
+    if impact_s is not None:
+        start = max(0.0, float(impact_s) - s.before_impact_s)
+        return start, min(float(impact_s) + s.after_impact_s, start + s.max_part_s)
+    end = float(end_s) + s.tail_s
+    return max(0.0, float(start_s) - s.lead_s, end - s.max_part_s), end
 
 
 def _same_moment(a: Part, b: Part) -> bool:
@@ -265,17 +279,70 @@ class Compiler:
             judged += 1
             self.conn.execute(
                 "INSERT OR REPLACE INTO fail_checks (ck_clip_id, streamer, window_id, is_fail, start_s, end_s,"
-                " strength, kind, note, model, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " impact_s, strength, kind, note, model, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (row["ck_clip_id"], streamer.name, row["window_id"], int(verdict.is_fail),
                  start + verdict.start_s if verdict.is_fail else None,
-                 start + verdict.end_s if verdict.is_fail else None, verdict.strength, verdict.kind, verdict.note,
-                 self.judge.model, db._now()))
+                 start + verdict.end_s if verdict.is_fail else None,
+                 start + verdict.impact_s if verdict.is_fail and verdict.impact_s is not None else None,
+                 verdict.strength, verdict.kind, verdict.note, self.judge.model, db._now()))
             self.conn.commit()
             if verdict.is_fail:
                 fails += 1
                 log.info("Clip %s has a driving fail (%s, strength %d): %s", row["ck_clip_id"], verdict.kind,
                          verdict.strength, verdict.note)
         return judged, fails
+
+    def refine_clip_fails(self) -> int:
+        """Second look at clip fails found before Claude named the crash's own second (see crash_hunt)."""
+        from .crash_hunt import refine_frames
+        done = 0
+        rows = self.conn.execute(
+            "SELECT f.*, w.local_path, w.start_utc AS w_start_utc, w.stream_id AS w_stream_id FROM fail_checks f"
+            " JOIN windows w ON w.id = f.window_id"
+            " WHERE f.is_fail = 1 AND f.impact_s IS NULL AND f.excluded = 0").fetchall()
+        for r in rows:
+            path = Path(r["local_path"])
+            if not path.is_file():
+                continue
+            start, end = max(0.0, float(r["start_s"]) - 4), float(r["end_s"]) + 4
+            try:
+                v = self.judge.judge(ClipEvidence(
+                    streamer=r["streamer"], duration_s=end - start,
+                    frames=self.frames(path, start, end, refine_frames(end - start)), transcript=[],
+                    chat=self._chat(r, start, end)))
+            except FailJudgeError as exc:
+                log.warning("Couldn't look again at clip %s: %s", r["ck_clip_id"], exc)
+                continue
+            done += 1
+            if not v.is_fail or v.impact_s is None:
+                self.conn.execute("UPDATE fail_checks SET is_fail = 0, note = ? WHERE ck_clip_id = ?",
+                                  (f"second look: no crash found ({v.note})"[:300], r["ck_clip_id"]))
+            else:
+                self.conn.execute("UPDATE fail_checks SET start_s = ?, end_s = ?, impact_s = ?, strength = ?,"
+                                  " kind = ?, note = ? WHERE ck_clip_id = ?",
+                                  (start + v.start_s, start + v.end_s, start + v.impact_s, v.strength, v.kind,
+                                   v.note, r["ck_clip_id"]))
+            self.conn.commit()
+        return done
+
+    def unbuild(self, comp_id: int, why: str) -> None:
+        """Takes a compilation back: its clip is rejected (unless already approved) and its fails are free."""
+        comp = self.conn.execute("SELECT * FROM compilations WHERE id = ?", (comp_id,)).fetchone()
+        if comp is None:
+            raise ValueError(f"no compilation {comp_id}")
+        made = self.conn.execute("SELECT * FROM clips WHERE window_id = ?", (comp["window_id"],)).fetchall()
+        if any(c["status"] in REVIEWED_ALREADY for c in made):
+            raise ValueError(f"compilation {comp_id} is already approved or published")
+        for c in made:
+            if c["status"] != "rejected":
+                db.set_clip_status(self.conn, c["ck_clip_id"], "rejected", note=why)
+        window = db.get_window(self.conn, comp["window_id"])
+        if window is not None and window["state"] == "planned":
+            db.update_window(self.conn, window["id"], state="failed", error=why)
+        self.conn.execute("UPDATE compilations SET state = 'dropped' WHERE id = ?", (comp_id,))
+        self.conn.execute("UPDATE fail_checks SET compilation_id = NULL WHERE compilation_id = ?", (comp_id,))
+        self.conn.execute("UPDATE vod_fails SET compilation_id = NULL WHERE compilation_id = ?", (comp_id,))
+        self.conn.commit()
 
     def _chat(self, row: sqlite3.Row, start: float, end: float) -> list[str]:
         if row["w_start_utc"] is None or row["w_stream_id"] is None:
@@ -300,8 +367,7 @@ class Compiler:
             path = Path(r["local_path"])
             if not path.is_file():
                 continue
-            start = max(0.0, float(r["start_s"]) - s.lead_s)
-            end = min(float(r["end_s"]) + s.tail_s, start + s.max_part_s)
+            start, end = part_range(r["start_s"], r["end_s"], r["impact_s"], s)
             abs_start = float(r["w_start_utc"]) + start if r["w_start_utc"] is not None else None
             parts.append(Part(clip_id=int(r["ck_clip_id"]), path=path, start_s=start, end_s=end,
                               strength=int(r["strength"]), kind=r["kind"], note=r["note"],
@@ -312,8 +378,7 @@ class Compiler:
                     " LEFT JOIN streams s ON s.video_id = f.video_id"
                     " WHERE f.streamer = ? AND f.is_fail = 1 AND f.excluded = 0 AND f.compilation_id IS NULL",
                     (streamer.name,)):
-                start = max(0.0, float(r["start_s"]) - s.lead_s)
-                end = min(float(r["end_s"]) + s.tail_s, start + s.max_part_s)
+                start, end = part_range(r["start_s"], r["end_s"], r["impact_s"], s)
                 abs_start = float(r["s_start_utc"]) + start if r["s_start_utc"] is not None else None
                 parts.append(Part(clip_id=0, path=None, start_s=start, end_s=end, strength=int(r["strength"]),
                                   kind=r["kind"], note=r["note"], source=r["video_id"], abs_start=abs_start,
@@ -322,9 +387,11 @@ class Compiler:
 
     def _download(self, part: Part) -> Part | None:
         """A finished stream's fail, downloaded in HD (once), as a part of that file."""
-        row = self.conn.execute("SELECT hd_path FROM vod_fails WHERE id = ?", (part.vod_id,)).fetchone()
+        row = self.conn.execute("SELECT hd_path, hd_start_s FROM vod_fails WHERE id = ?", (part.vod_id,)).fetchone()
         path = Path(row["hd_path"]) if row and row["hd_path"] else None
-        if path is None or not path.is_file():
+        hd_start = row["hd_start_s"] if row else None
+        covers = hd_start is not None and hd_start <= part.start_s and part.end_s <= hd_start + HD_PAD_S * 2 + part.seconds
+        if path is None or not path.is_file() or not covers:
             if self.fetch is None:
                 return None
             dest = self.windows_dir / f"vodfail_{part.source}_{int(part.start_s)}"
@@ -334,9 +401,11 @@ class Compiler:
                 log.warning("Couldn't download fail v%s (%s at %.0f s): %s", part.vod_id, part.source,
                             part.start_s, exc)
                 return None
-            self.conn.execute("UPDATE vod_fails SET hd_path = ? WHERE id = ?", (str(path), part.vod_id))
+            hd_start = max(0.0, part.start_s - HD_PAD_S)
+            self.conn.execute("UPDATE vod_fails SET hd_path = ?, hd_start_s = ? WHERE id = ?",
+                              (str(path), hd_start, part.vod_id))
             self.conn.commit()
-        start = min(HD_PAD_S, part.start_s)
+        start = part.start_s - float(hd_start)
         return replace(part, path=path, start_s=start, end_s=start + part.seconds)
 
     def _plan_ready(self, streamer: Streamer, include_vods: bool, settings: CompilationSettings) -> list[Part]:

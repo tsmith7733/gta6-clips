@@ -189,6 +189,13 @@ MIGRATIONS = {
     "publish_log": {
         "channel": "TEXT NOT NULL DEFAULT ''",   # '' = Clips Kitty's channel, else a publish.channels key
     },
+    "fail_checks": {
+        "impact_s": "REAL",          # the crash itself, in seconds of the window's file
+    },
+    "vod_fails": {
+        "impact_s": "REAL",          # the crash itself, in seconds of the stream
+        "hd_start_s": "REAL",        # where hd_path starts, in seconds of the stream
+    },
     "clips": {
         "review_from": "TEXT NOT NULL DEFAULT ''",   # pending_review | spoiler_hold before the owner decided
     },

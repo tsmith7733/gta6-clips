@@ -69,6 +69,10 @@ def _parser() -> argparse.ArgumentParser:
     comp.add_argument("--top", type=int, metavar="N",
                       help="build 'top N driving fails' Shorts from the best unused fails (clips and hunted streams)")
     comp.add_argument("--shorts", type=int, default=3, help="with --top: how many Shorts (default 3)")
+    comp.add_argument("--refine", action="store_true",
+                      help="look again at fails found before Claude named the crash's second, to cut around it")
+    comp.add_argument("--unbuild", type=int, action="append", metavar="ID",
+                      help="take compilation ID back (its clip is rejected, its fails are free again)")
     comp.add_argument("--drop", metavar="CLIP",
                       help="leave this fail out (a clip id, or v<number> for one found by hunt): its compilation "
                            "is rejected and built again without it")
@@ -573,6 +577,23 @@ def _compile(cfg, client, conn, streamers, args) -> int:
     if compiler is None:
         print("Compilations need ANTHROPIC_API_KEY in .env.", file=sys.stderr)
         return 2
+    if args.unbuild:
+        for comp_id in args.unbuild:
+            compiler.unbuild(comp_id, "taken back to be rebuilt")
+            print(f"Compilation {comp_id} taken back; its fails are free again.")
+    if args.refine:
+        from .crash_hunt import HuntSettings, frames_from_url, refine_vod_fails, resolve_low_url
+        if _recording_now(conn):
+            print("A live stream is being recorded right now; run --refine once it's over.", file=sys.stderr)
+            return 1
+        ffmpeg = find_ffmpeg(cfg)
+        clips_done = compiler.refine_clip_fails()
+        vods_done = refine_vod_fails(conn, compiler.judge,
+                                     lambda url, h, s, e, n: frames_from_url(ffmpeg, url, h, s, e, n),
+                                     resolve_low_url, HuntSettings.from_config(cfg).low_format)
+        print(f"Looked again at {clips_done} clip fail(s) and {vods_done} stream fail(s).")
+    if (args.refine or args.unbuild) and not args.top:
+        return 0
     if args.top:
         made = []
         for streamer in compiler._streamers():

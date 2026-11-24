@@ -126,7 +126,8 @@ def test_fails_become_a_compilation_on_the_review_page(cfg, ck, ck_state, conn, 
     row = conn.execute("SELECT * FROM compilations").fetchone()
     parts = json.loads(row["parts"])
     assert [p["clip"] for p in parts] == [506, 504, 503, 502, 501]   # strongest first; 6+ only; the 3 left out
-    assert parts[0]["start_s"] == pytest.approx(60 + 10 - 1) and parts[0]["end_s"] == pytest.approx(69 + 10)   # capped at max_part_seconds
+    # No impact second: the part ends where the fail does (+1.5 s), 10 s at most.
+    assert parts[0]["start_s"] == pytest.approx(79.5 - 10) and parts[0]["end_s"] == pytest.approx(60 + 18 + 1.5)
     assert comp.run_once().queued == []                     # its fails are used; nothing is checked twice
     assert len(judge.seen) == 7
 
@@ -255,7 +256,7 @@ def test_hunted_fails_join_the_clips_fails_in_a_best_of(cfg, ck, conn, streamers
     parts = json.loads(conn.execute("SELECT parts FROM compilations WHERE id = ?", (comp_id,)).fetchone()[0])
     assert parts[0]["label"].startswith("v") and parts[0]["strength"] == 10      # the best one leads
     assert parts[0]["start_s"] == pytest.approx(5.0)                    # within its HD download
-    assert fetched == [("vod1", pytest.approx(605 - 45 + 30 - 1))]   # peak 605 s, 45 s looked at before it
+    assert fetched == [("vod1", pytest.approx(605 - 45 + 38 + 1.5 - 10))]   # peak 605 s, 45 s looked at before it
     assert comp.drop(parts[0]["label"]) is None                          # without it: 4 fails, too few again
 
 
@@ -271,3 +272,15 @@ def test_top_five_shorts_share_out_the_best_fails(cfg, ck, conn, streamers, work
     assert groups == [[10, 9, 8, 7, 7], [10, 9, 8, 7, 6], [9, 8, 8, 7, 6]]     # 1st, 4th, 7th... to the first
     assert all(r["kind"] == "top 5 driving fails" for r in rows)
     assert comp.build_top(comp._streamers()[0], shorts=3, per=5) == []         # one fail left: none more
+
+
+
+def test_parts_are_cut_around_the_crash_itself():
+    from gta6clips.compilation import part_range
+    s = CompilationSettings()
+    # A 36 s "chain of wrecks" whose big crash is at 1:30: the part is that crash, not the first 10 s.
+    assert part_range(60.0, 96.0, 90.0, s) == (84.0, 94.0)
+    assert part_range(60.0, 96.0, None, s) == (87.5, 97.5)     # unknown: the end of the stretch
+    v = parse_verdict(json.dumps({"is_fail": True, "start_s": 2, "end_s": 30, "impact_s": 27, "strength": 8,
+                                  "kind": "x", "note": ""}), duration_s=40)
+    assert v.impact_s == 27
