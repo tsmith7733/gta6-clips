@@ -51,6 +51,7 @@ class Shot:
     out_fx: str = ""              # a transition out of it
     push: bool = False            # a frozen frame with a slow push-in
     center: tuple[float, float] = (0.5, 0.5)   # what a moving zoom closes in on (fractions of the frame)
+    effect: str = ""              # a freeze's or replay's own effect, over the whole shot
 
     @property
     def moving(self) -> bool:
@@ -131,7 +132,7 @@ def build_shots(plan: EditPlan, duration_s: float, cam_box=None) -> list[Shot]:
             if abs(f.at - a) <= EPS:
                 z = zoom_at(a)
                 shots.append(Shot("freeze", a, a, f.seconds, crop=crop_for(z.target, z.scale, z.box, cam_box) if z else None,
-                                  label=f.label, push=f.push))
+                                  label=f.label, push=f.push, effect=f.effect))
         z = zoom_at(a)
         speed = speed_at(plan, (a + b) / 2)
         shots.append(Shot("play", a, b, (b - a) / speed, speed=speed, crop=crop(z), shake=bool(z and z.shake),
@@ -139,7 +140,7 @@ def build_shots(plan: EditPlan, duration_s: float, cam_box=None) -> list[Shot]:
         for r in replay_after.get(i, []):
             shots.append(Shot("play", r.start, r.end, (r.end - r.start) / r.speed, speed=r.speed,
                               crop=crop_for(r.target, r.scale, r.box, cam_box) if r.scale > 1.0 else None,
-                              replay=True, label=r.label))
+                              replay=True, label=r.label, effect=r.effect))
     # Transitions: out of the piece that ends at the cut, into whatever comes next.
     for t in plan.transitions:
         i = next((i for i, s in enumerate(shots) if s.kind == "play" and not s.replay and abs(s.b - t.at) <= EPS), None)
@@ -229,6 +230,50 @@ def motion_filter(s: Shot) -> str:
         blur.append(f"{_blur(s.in_fx)}:enable='lt(t\\,{TRANSITION_S})'")
     return (f"scale={W * UPSCALE}:{H * UPSCALE},zoompan=z='max(1\\,{z})':x='{x}':y='{y}':d=1:s={W}x{H}:fps={FPS}"
             + "".join("," + b for b in blur))
+
+
+# -- looks: effects over stretches of the edit, and a colour grade over all of it ------------------
+GRADE_FILTERS = {
+    "none": "",
+    "punchy": "eq=contrast=1.08:saturation=1.2",
+    "warm": "colorbalance=rs=0.06:gs=0.01:bs=-0.06:rm=0.04:bm=-0.04,eq=saturation=1.1",
+    "cool": "colorbalance=rs=-0.05:bs=0.07:bm=0.04,eq=contrast=1.05",
+    "cinematic": "eq=contrast=1.12:saturation=0.85,colorbalance=rs=0.03:bs=-0.02:rh=-0.02:bh=0.04,vignette=angle=PI/6",
+}
+GLITCH_HZ = 12       # the glitch flips between two colour shifts this often, so it flickers
+
+
+def effect_filters(kind: str, a: float, b: float) -> list[str]:
+    """The filters for one effect between output times a and b."""
+    on = f"between(t\\,{a:.3f}\\,{b:.3f})"
+    if kind == "glitch":
+        return [f"rgbashift=rh=-16:bh=16:rv=3:enable='{on}*lt(mod(t*{GLITCH_HZ}\\,1)\\,0.5)'",
+                f"rgbashift=rh=10:bh=-10:bv=-5:enable='{on}*gte(mod(t*{GLITCH_HZ}\\,1)\\,0.5)'",
+                f"noise=alls=28:allf=t:enable='{on}'"]
+    if kind == "rgb_split":
+        return [f"chromashift=crh=-14:cbh=14:enable='{on}'"]
+    if kind == "bw":
+        return [f"hue=s=0:enable='{on}'", f"eq=contrast=1.15:enable='{on}'"]
+    if kind == "vignette":
+        return [f"vignette=angle=PI/4.5:enable='{on}'"]
+    if kind == "pop":
+        return [f"eq=contrast=1.12:saturation=1.45:enable='{on}'"]
+    raise RenderError(f"unknown effect {kind!r}")
+
+
+def effect_ranges(plan: EditPlan, shots: list[Shot]) -> list[tuple[float, float, str]]:
+    """(output start, output end, kind) for every effect: the plan's own, and freezes' and replays'."""
+    out = []
+    for e in plan.effects:
+        a, b = out_time(shots, e.start), out_time(shots, e.end)
+        if b > a:
+            out.append((a, b, e.kind))
+    clock = 0.0
+    for s in shots:
+        if s.effect:
+            out.append((clock, clock + s.seconds, s.effect))
+        clock += s.seconds
+    return sorted(out)
 
 
 def _blur(kind: str) -> str:
@@ -386,6 +431,11 @@ def build_graph(plan: EditPlan, shots: list[Shot], workdir: Path, sounds=None,
     if plan.hook:
         overlays.append((0.0, plan.hook.seconds, Text(0, 0, plan.hook.text, "top", "l")))
     chain, files = [], []
+    # Colour first, then the effects, so text and labels drawn after stay clean and readable.
+    if GRADE_FILTERS.get(plan.grade):
+        chain.append(GRADE_FILTERS[plan.grade])
+    for a, b, kind in effect_ranges(plan, shots):
+        chain += effect_filters(kind, a, b)
     for n, (a, b, t) in enumerate(overlays):
         name = f"t{n}.txt"
         # newline="\n": on Windows text mode writes \r\n, and drawtext draws the \r as a blank line.

@@ -138,6 +138,51 @@ def test_claude_plans_we_render_it_checks_and_fixes(tmp_path):
     assert again.state == "ready" and states == ["replaced", "ready"]
 
 
+def test_plans_are_json_text_read_leniently_and_unreadable_ones_go_back():
+    from types import SimpleNamespace
+
+    from gta6clips.editing.editor import ClaudePlanWriter, json_object
+
+    assert json_object('```json\n{"keep": []}\n```') == {"keep": []}
+    assert json_object('Here it is: {"keep": [[0, 5]]} hope that helps') == {"keep": [[0, 5]]}
+    assert json_object("no plan") is None and json_object("[1, 2]") is None
+
+    class Messages:
+        def __init__(self):
+            self.calls = []
+            self.replies = ["Sorry, {not json", '{"keep": []}']
+
+        def create(self, **kw):
+            self.calls.append(kw)
+            return SimpleNamespace(stop_reason="end_turn", model="claude-opus-5-5",
+                                   usage=SimpleNamespace(input_tokens=100, output_tokens=10),
+                                   content=[SimpleNamespace(type="text", text=self.replies.pop(0))])
+
+    messages = Messages()
+    writer = ClaudePlanWriter(client=SimpleNamespace(beta=SimpleNamespace(messages=messages)))
+    brief = EditBrief(7, "x", "t", 6.0, [], [], [], CAM)
+    bad = writer.plan(brief)
+    assert bad.error.startswith("your answer wasn't one valid JSON object") and bad.data == {}
+    assert "format" not in messages.calls[0]["output_config"]                 # not held to the schema
+    assert '"grade"' in messages.calls[0]["messages"][0]["content"][-1]["text"]  # it's in the prompt instead
+    assert writer.plan(brief, bad.error).data == {"keep": []}
+
+
+@needs_ffmpeg
+def test_an_unreadable_plan_is_sent_back_once(tmp_path):
+    class Garbled(FakeWriter):
+        def plan(self, brief, problem=""):
+            if not problem:
+                self.problems.append(problem)
+                return Answer({}, "claude-opus-5-5", 10_000, 2_000, error="your answer wasn't one valid JSON object")
+            return super().plan(brief, "zoom scale")   # then the valid fixed plan
+
+    writer = Garbled(ok=True)
+    editor = _editor(tmp_path, writer, src=_source(tmp_path))
+    result = editor.edit(7)
+    assert result.state == "ready" and writer.problems[0] == ""
+
+
 @needs_ffmpeg
 def test_a_failed_self_check_keeps_the_first_render(tmp_path):
     from gta6clips.editing.editor import EditorError

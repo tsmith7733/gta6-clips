@@ -23,7 +23,7 @@ from typing import Callable, Protocol
 from ..media import _popen_kwargs
 from .moments import LoudMoment, measure_moments
 from .plan import EditPlan, PlanError, parse_plan, plan_schema
-from .render import RenderError, build_shots, out_time, render, sound_events
+from .render import RenderError, build_shots, effect_ranges, out_time, render, sound_events
 from .sounds import SoundLibrary
 
 log = logging.getLogger(__name__)
@@ -89,6 +89,15 @@ cut is better inside one scene, and not every cut needs one.
 after it (`after`, default its end). At most one or two per clip, only for something worth seeing twice.
 - freezes: a frame held 0.4-1 s with a short label ("BRUH", "WAIT FOR IT"), on the exact moment before \
 or of the payoff (push: true adds a slow push-in while it's frozen). Use sparingly: at most one.
+- effects: a look over a stretch of the clip: "glitch" (0.3-1 s of flickering colour shift and grain: \
+a bug, a jump scare, a "what just happened"), "rgb_split" (0.3-1 s of split colour on an impact), \
+"bw" (black and white: the "it's over" moment), "vignette" (dark edges for a few seconds of tension), \
+"pop" (extra colour and contrast on the payoff). A freeze or a replay can take an "effect" over all \
+of it: a black-and-white freeze on the fail, a glitch into a replay. 1-3 effects in a clip; they're \
+seasoning, and a glitch over talking just looks broken.
+- grade: the whole edit's colour. "punchy" (a bit more contrast and colour) suits most action clips; \
+"warm", "cool" or "cinematic" (muted, contrasty, dark edges) when they fit the mood; "none" keeps the \
+game's own look. Don't stack "cinematic" with a vignette effect.
 - texts: short captions that add something: a label for what's happening, a punchline, a count \
 ("FAIL #2"). Not a transcript. 1-5 words, position "top" (over the game, under the webcam), \
 "middle" or "bottom"; size s, m or l. Don't cover the streamer's face box. Each shows 1-3 s.
@@ -124,7 +133,9 @@ empty game or half a face?
 - is every text readable, not cut off at the edges, and not covering his face or the action?
 - does the hook make sense on its first frame?
 - anything that looks broken (black frames, a wrong crop, text over text)?
-Transitions are blurred on purpose, and a smooth or push zoom may be mid-way in a frame.
+Transitions are blurred on purpose, and a smooth or push zoom may be mid-way in a frame. Glitch, \
+colour-split, black-and-white and grain are effects you chose, not damage; judge only whether they \
+land where they should and don't hide the action.
 You can't hear the edit, so keep its sounds and music as they are unless a fix moves the moment they \
 belong to (then move them with it).
 Answer ok=true if it's good enough to show the owner. Otherwise list the problems and give a fixed \
@@ -150,11 +161,7 @@ def fixed_plan(answer: dict) -> dict | None:
     """The self-check's fixed plan, or None (no fix, or text that isn't a JSON object)."""
     if isinstance(answer.get("fixed_plan"), dict):          # older answers, and the tests' fakes
         return answer["fixed_plan"]
-    try:
-        data = json.loads(answer.get("fixed_plan_json") or "null")
-    except ValueError:
-        return None
-    return data if isinstance(data, dict) else None
+    return json_object(answer.get("fixed_plan_json") or "")
 
 
 class EditorError(Exception):
@@ -188,6 +195,23 @@ class Answer:
     model: str
     input_tokens: int
     output_tokens: int
+    error: str = ""             # a plan that couldn't be read (sent back to Claude like a refused plan)
+
+
+def json_object(text: str) -> dict | None:
+    """The JSON object in an answer, also inside a ```json fence or with words around it; else None."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+        text = text.rsplit("```", 1)[0]
+    for candidate in (text, text[text.find("{"): text.rfind("}") + 1] if "{" in text else ""):
+        try:
+            data = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
 
 
 class PlanWriter(Protocol):
@@ -237,14 +261,25 @@ class ClaudePlanWriter:
         self.model = model
         self.effort = effort
 
-    def _ask(self, system: str, content: list[dict], schema: dict) -> Answer:
+    def _ask(self, system: str, content: list[dict], schema: dict, *, strict: bool = True) -> Answer:
+        """strict: the answer is held to `schema` (structured output). Otherwise the schema is in the
+        prompt and the answer is JSON text: the plan schema grew past what the API compiles ("compiled
+        grammar is too large", 2026-11-25), and parse_plan checks every plan anyway."""
         import anthropic
 
+        output = {"effort": self.effort}
+        if strict:
+            output["format"] = {"type": "json_schema", "schema": schema}
+        else:
+            content = content + [{"type": "text", "text": "Answer with only the plan: one JSON object, no other "
+                                  "text, following this JSON Schema (every field is required; use [] for none, "
+                                  "\"\" for an unused effect, sound, track or hook, -1 for a replay's default "
+                                  "`after`):\n" + json.dumps(schema, separators=(",", ":"))}]
         try:
             response = self._client.beta.messages.create(
                 model=self.model, max_tokens=16000, system=system,
                 messages=[{"role": "user", "content": content}],
-                output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": schema}},
+                output_config=output,
                 betas=["server-side-fallback-2026-07-01"], fallbacks="default")
         except anthropic.AuthenticationError as exc:
             raise EditorError("The Claude API key in .env (ANTHROPIC_API_KEY) was rejected") from exc
@@ -264,17 +299,20 @@ class ClaudePlanWriter:
         if response.stop_reason == "max_tokens":
             raise EditorError("Claude's answer was cut off (max_tokens)")
         text = next((b.text for b in response.content if b.type == "text"), "")
-        try:
-            answer.data = json.loads(text)
-        except ValueError as exc:
-            raise EditorError(f"Claude returned invalid JSON: {text[:200]!r}") from exc
+        data = json_object(text)
+        if data is None:
+            if strict:
+                raise EditorError(f"Claude returned invalid JSON: {text[:200]!r}")
+            answer.error = f"your answer wasn't one valid JSON object (it began {text[:80]!r})"
+        else:
+            answer.data = data
         return answer
 
     def plan(self, brief: EditBrief, problem: str = "") -> Answer:
         content = brief_content(brief)
         if problem:
             content.append({"type": "text", "text": f"Your last plan was refused: {problem}. Write it again."})
-        return self._ask(EDIT_PROMPT, content, brief.schema())
+        return self._ask(EDIT_PROMPT, content, brief.schema(), strict=False)
 
     def check(self, brief: EditBrief, plan: dict, frames: list[tuple[float, str, bytes]]) -> Answer:
         content: list[dict] = [{"type": "text", "text": f"Clip title: {brief.title}\nClip length: "
@@ -312,6 +350,8 @@ def check_points(plan: EditPlan, duration_s: float, cam_box=None, limit: int = 1
             points.append((out_time(shots, (z.start + z.end) / 2), f"a {z.scale:.1f}x {kind} on the {z.target}"))
     for t in plan.texts:
         points.append((out_time(shots, (t.start + t.end) / 2), f"the text '{t.text}' at the {t.position}"))
+    for a, b, kind in effect_ranges(plan, shots):
+        points.append(((a + b) / 2, f"the {kind.replace('_', ' ')} effect"))
     clock = 0.0
     for s in shots:
         if s.replay or s.kind == "freeze":
@@ -463,6 +503,9 @@ class Editor:
         for _ in range(2):
             answer = self.writer.plan(brief, problem)
             cost += self._paid(answer, "edit plan", clip_id)
+            if answer.error:
+                problem = answer.error
+                continue
             try:
                 return answer.data, parse_plan(answer.data, brief.duration_s, self.sounds), cost
             except PlanError as exc:

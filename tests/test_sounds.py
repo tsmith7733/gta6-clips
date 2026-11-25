@@ -85,8 +85,8 @@ def test_claude_is_told_the_sounds_and_held_to_their_ids():
     lib = _lib()
     schema = plan_schema(lib.ids("sfx"), lib.ids("music"))
     assert schema["properties"]["sounds"]["items"]["properties"]["sound"]["enum"] == ["boom", "whoosh", "pop"]
-    assert schema["properties"]["replays"]["items"]["properties"]["sound"]["enum"][0] == "boom"
-    assert schema["properties"]["music"]["properties"]["track"]["enum"] == ["beat"]
+    assert schema["properties"]["replays"]["items"]["properties"]["sound"]["enum"] == ["", "boom", "whoosh", "pop"]
+    assert schema["properties"]["music"]["properties"]["track"]["enum"] == ["", "beat"]   # "": no music
     assert "sounds" not in plan_schema()["properties"]                      # no library: no sound moves
     # the check sends its fix back as JSON text (a nested plan schema was "too large" for the API)
     assert CHECK_SCHEMA["properties"]["fixed_plan_json"] == {"type": "string"}

@@ -7,7 +7,7 @@ from Claude can't make ffmpeg do something odd; `render.py` turns a plan into on
 
 from __future__ import annotations
 
-import copy
+
 from dataclasses import dataclass, field
 
 TARGETS = ("cam", "game", "box")
@@ -18,6 +18,9 @@ MAX_SOUNDS = 10
 ZOOM_STYLES = ("punch", "smooth", "push")   # cut straight in | ease in and out | slow push-in over the zoom
 TRANSITIONS = ("whip", "zoom")
 MAX_TRANSITIONS = 6
+EFFECTS = ("glitch", "rgb_split", "bw", "vignette", "pop")
+GRADES = ("none", "punchy", "warm", "cool", "cinematic")
+MAX_EFFECTS = 8
 
 
 class PlanError(ValueError):
@@ -50,6 +53,13 @@ class Transition:
 
 
 @dataclass(frozen=True)
+class Effect:
+    start: float                            # source time
+    end: float
+    kind: str                               # one of EFFECTS
+
+
+@dataclass(frozen=True)
 class Replay:
     start: float
     end: float                              # the moment shown again, 1-6 s
@@ -60,6 +70,7 @@ class Replay:
     label: str = "REPLAY"
     after: float | None = None              # where it's inserted (default: right after `end`)
     sound: str = ""                         # a sound effect id, played as the replay starts
+    effect: str = ""                        # one of EFFECTS over the whole replay
 
 
 @dataclass(frozen=True)
@@ -69,6 +80,7 @@ class Freeze:
     label: str = ""
     sound: str = ""
     push: bool = False                      # a slow push-in while it's frozen
+    effect: str = ""                        # one of EFFECTS while it's frozen ("bw" is the classic)
 
 
 @dataclass(frozen=True)
@@ -115,6 +127,8 @@ class EditPlan:
     music: Music | None = None
     speeds: tuple[Speed, ...] = ()
     transitions: tuple[Transition, ...] = ()
+    effects: tuple[Effect, ...] = ()
+    grade: str = "none"                     # the whole edit's colour: one of GRADES
 
 
 def _num(d: dict, key: str, default=None) -> float:
@@ -129,7 +143,7 @@ def _num(d: dict, key: str, default=None) -> float:
 
 def _box(d: dict) -> tuple[float, float, float, float] | None:
     b = d.get("box")
-    if b is None:
+    if not b:                                  # missing, or [] (the schema's "no box")
         return None
     if len(b) != 4 or not all(0 <= float(x) <= 1 for x in b) or float(b[2]) <= 0 or float(b[3]) <= 0:
         raise PlanError(f"box must be [x, y, w, h] fractions of the frame, not {b!r}")
@@ -162,6 +176,12 @@ def parse_plan(data: dict, duration_s: float, sounds=None) -> EditPlan:
         if sounds is None or sounds.get(sid, "sfx") is None:
             raise PlanError(f"there's no sound effect {sid!r} in the sound library")
         return sid
+
+    def effect(value) -> str:
+        kind = str(value or "").strip()
+        if kind and kind not in EFFECTS:
+            raise PlanError(f"effect must be one of {EFFECTS}, not {kind!r}")
+        return kind
 
     def within(a: float, b: float, what: str, min_len: float = 0.2) -> tuple[float, float]:
         a, b = max(0.0, a), min(duration_s, b)
@@ -205,16 +225,17 @@ def parse_plan(data: dict, duration_s: float, sounds=None) -> EditPlan:
         if target not in TARGETS:
             raise PlanError(f"replay target must be one of {TARGETS}")
         after = r.get("after")
-        after = b if after is None else min(duration_s, max(0.0, float(after)))
+        after = b if after is None or float(after) < 0 else min(duration_s, float(after))   # -1: right after it
         replays.append(Replay(a, b, speed, target, max(1.0, min(3.0, _num(r, "scale", 1.3))), _box(r),
-                              _clean_text(r.get("label", "REPLAY"), 20), after, sfx(r.get("sound"))))
+                              _clean_text(r.get("label", "REPLAY"), 20), after, sfx(r.get("sound")),
+                              effect(r.get("effect"))))
     freezes = []
     for f in data.get("freezes") or []:
         at = _num(f, "at")
         if not 0 <= at < duration_s:
             raise PlanError(f"freeze at {at:.1f} s is outside the clip")
         freezes.append(Freeze(at, max(0.2, min(1.5, _num(f, "seconds", 0.7))), _clean_text(f.get("label", ""), 30),
-                              sfx(f.get("sound")), bool(f.get("push", False))))
+                              sfx(f.get("sound")), bool(f.get("push", False)), effect(f.get("effect"))))
     texts = []
     for t in data.get("texts") or []:
         a, b = within(_num(t, "start"), _num(t, "end"), "text", 0.4)
@@ -277,70 +298,74 @@ def parse_plan(data: dict, duration_s: float, sounds=None) -> EditPlan:
             transitions.append(Transition(cut, kind))
     if len(transitions) > MAX_TRANSITIONS:
         raise PlanError(f"at most {MAX_TRANSITIONS} transitions")
+    looks = []
+    for x in data.get("effects") or []:
+        a, b = within(_num(x, "start"), _num(x, "end"), "effect")
+        kind = effect(x.get("kind"))
+        if not kind:
+            raise PlanError("an effect needs its kind")
+        looks.append(Effect(a, b, kind))
+    if len(looks) + sum(1 for m in (*replays, *freezes) if m.effect) > MAX_EFFECTS:
+        raise PlanError(f"at most {MAX_EFFECTS} effects")
+    grade = str(data.get("grade") or "none")
+    if grade not in GRADES:
+        raise PlanError(f"grade must be one of {GRADES}")
     plan = EditPlan(tuple(keep), tuple(zooms), tuple(replays), tuple(freezes), tuple(texts), flashes, hook,
                     tuple(str(n)[:200] for n in data.get("notes") or []), tuple(effects), music, tuple(speeds),
-                    tuple(sorted(transitions, key=lambda t: t.at)))
+                    tuple(sorted(transitions, key=lambda t: t.at)), tuple(sorted(looks, key=lambda e: e.start)),
+                    grade)
     return plan
 
 
 # The JSON schema Claude's plans follow (structured output), same moves as parse_plan.
-_BOX = {"type": "array", "items": {"type": "number"}}
-_PLAN_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "keep": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}},
-        "zooms": {"type": "array", "items": {"type": "object", "properties": {
-            "start": {"type": "number"}, "end": {"type": "number"}, "target": {"type": "string", "enum": list(TARGETS)},
-            "scale": {"type": "number"}, "box": _BOX, "shake": {"type": "boolean"},
-            "style": {"type": "string", "enum": list(ZOOM_STYLES)}},
-            "required": ["start", "end", "target", "scale", "style"], "additionalProperties": False}},
-        "speeds": {"type": "array", "items": {"type": "object", "properties": {
-            "start": {"type": "number"}, "end": {"type": "number"}, "speed": {"type": "number"},
-            "ramp": {"type": "boolean"}}, "required": ["start", "end", "speed", "ramp"], "additionalProperties": False}},
-        "transitions": {"type": "array", "items": {"type": "object", "properties": {
-            "at": {"type": "number"}, "kind": {"type": "string", "enum": list(TRANSITIONS)}},
-            "required": ["at", "kind"], "additionalProperties": False}},
-        "replays": {"type": "array", "items": {"type": "object", "properties": {
-            "start": {"type": "number"}, "end": {"type": "number"}, "speed": {"type": "number"},
-            "target": {"type": "string", "enum": list(TARGETS)}, "scale": {"type": "number"}, "box": _BOX,
-            "label": {"type": "string"}, "after": {"type": "number"}},
-            "required": ["start", "end", "speed", "target", "scale", "label"], "additionalProperties": False}},
-        "freezes": {"type": "array", "items": {"type": "object", "properties": {
-            "at": {"type": "number"}, "seconds": {"type": "number"}, "label": {"type": "string"},
-            "push": {"type": "boolean"}},
-            "required": ["at", "seconds", "label"], "additionalProperties": False}},
-        "texts": {"type": "array", "items": {"type": "object", "properties": {
-            "start": {"type": "number"}, "end": {"type": "number"}, "text": {"type": "string"},
-            "position": {"type": "string", "enum": list(POSITIONS)}, "size": {"type": "string", "enum": list(SIZES)}},
-            "required": ["start", "end", "text", "position", "size"], "additionalProperties": False}},
-        "flashes": {"type": "array", "items": {"type": "number"}},
-        "hook": {"type": "object", "properties": {"text": {"type": "string"}, "seconds": {"type": "number"}},
-                 "required": ["text", "seconds"], "additionalProperties": False},
-        "notes": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": ["keep", "zooms", "replays", "freezes", "texts", "flashes", "notes", "speeds", "transitions"],
-    "additionalProperties": False,
-}
+# Every property is required: optional ones multiply the grammar the API compiles, and with the
+# effects it refused the plan ("compiled grammar is too large", 2026-11-25). "Not used" is an empty
+# value instead: "" for an effect, sound or music track, [] for a box, -1 for a replay's `after`,
+# "" for the hook's text. parse_plan reads those as unset.
+def _obj(**props) -> dict:
+    return {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
+
+
+def _arr(items) -> dict:
+    return {"type": "array", "items": items}
+
+
+def _enum(values) -> dict:
+    return {"type": "string", "enum": list(values)}
+
+
+_NUM, _STR, _BOOL = {"type": "number"}, {"type": "string"}, {"type": "boolean"}
 
 
 def plan_schema(sfx_ids=(), music_ids=()) -> dict:
     """The plan schema, with the sound moves when the library has sounds (their ids as enums, so
     Claude can't name a file that isn't there)."""
-    schema = copy.deepcopy(_PLAN_SCHEMA)
-    props = schema["properties"]
+    box = _arr(_NUM)
+    effect = _enum(("", *EFFECTS))
+    sound = _enum(("", *sfx_ids))
+    sounded = {"sound": sound} if sfx_ids else {}
+    props = {
+        "keep": _arr(_arr(_NUM)),
+        "zooms": _arr(_obj(start=_NUM, end=_NUM, target=_enum(TARGETS), scale=_NUM, box=box, shake=_BOOL,
+                           style=_enum(ZOOM_STYLES))),
+        "speeds": _arr(_obj(start=_NUM, end=_NUM, speed=_NUM, ramp=_BOOL)),
+        "transitions": _arr(_obj(at=_NUM, kind=_enum(TRANSITIONS))),
+        "replays": _arr(_obj(start=_NUM, end=_NUM, speed=_NUM, target=_enum(TARGETS), scale=_NUM, box=box,
+                             label=_STR, after=_NUM, effect=effect, **sounded)),
+        "freezes": _arr(_obj(at=_NUM, seconds=_NUM, label=_STR, push=_BOOL, effect=effect, **sounded)),
+        "effects": _arr(_obj(start=_NUM, end=_NUM, kind=_enum(EFFECTS))),
+        "grade": _enum(GRADES),
+        "texts": _arr(_obj(start=_NUM, end=_NUM, text=_STR, position=_enum(POSITIONS), size=_enum(SIZES),
+                           **sounded)),
+        "flashes": _arr(_NUM),
+        "hook": _obj(text=_STR, seconds=_NUM),
+        "notes": _arr(_STR),
+    }
     if sfx_ids:
-        sound = {"type": "string", "enum": list(sfx_ids)}
-        for move in ("replays", "freezes", "texts"):
-            props[move]["items"]["properties"]["sound"] = sound
-        props["sounds"] = {"type": "array", "items": {"type": "object", "properties": {
-            "at": {"type": "number"}, "sound": sound, "volume": {"type": "number"}},
-            "required": ["at", "sound", "volume"], "additionalProperties": False}}
-        schema["required"].append("sounds")
+        props["sounds"] = _arr(_obj(at=_NUM, sound=_enum(sfx_ids), volume=_NUM))
     if music_ids:
-        props["music"] = {"type": "object", "properties": {
-            "track": {"type": "string", "enum": list(music_ids)}, "volume": {"type": "number"},
-            "start": {"type": "number"}}, "required": ["track", "volume", "start"], "additionalProperties": False}
-    return schema
+        props["music"] = _obj(track=_enum(("", *music_ids)), volume=_NUM, start=_NUM)
+    return _obj(**props)
 
 
 PLAN_SCHEMA = plan_schema()
