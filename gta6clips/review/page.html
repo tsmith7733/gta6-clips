@@ -62,6 +62,9 @@
   .notes { margin: 10px 0 0; padding: 8px 10px; background: var(--warn-bg); color: var(--warn-ink);
            border-radius: 6px; font-size: 13px; }
   .notes div + div { margin-top: 4px; }
+  .music { margin: 10px 0 0; padding: 8px 10px; border: 2px solid var(--danger); color: var(--danger);
+           border-radius: 6px; font-size: 14px; }
+  .music.possible { border-width: 1px; }
   details { margin-top: 10px; font-size: 13px; }
   summary { cursor: pointer; color: var(--muted); }
   details pre { white-space: pre-wrap; font: inherit; margin: 6px 0 0; }
@@ -162,6 +165,9 @@ function card(c) {
       <div class="count"></div>
     </fieldset>`;
   const notes = c.notes.length ? `<div class="notes">${c.notes.map(n => `<div>${esc(n)}</div>`).join("")}</div>` : "";
+  const m = c.music;
+  const music = !m ? "" : `<div class="music ${m.verdict}"><b>${m.verdict === "likely" ? "Likely" : "Possibly"} copyrighted music${m.song ? `: ${esc(m.song)}` : ""}.</b>
+      YouTube can block a Short with a licensed song in it.${m.evidence ? ` ${esc(m.evidence)}` : ""}</div>`;
   const u = c.upload;
   const upload = !u ? "" : `<div class="upload">${{
       submitted: `Uploading to YouTube, scheduled for <b>${esc(u.when)}</b>…`,
@@ -210,6 +216,7 @@ function card(c) {
       <div class="src" title="${esc(c.source_title)}">${esc(c.source_title)}</div>
       ${titleBlock}
       ${upload}
+      ${music}
       ${notes}
       ${editor}
       <details class="capdetails"><summary>Captions</summary><div class="caps">Loading…</div></details>

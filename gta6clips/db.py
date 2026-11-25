@@ -199,6 +199,16 @@ CREATE TABLE IF NOT EXISTS editor_feedback (
     created_at  TEXT NOT NULL
 );
 
+-- Whether a clip carries a licensed song (GTA 6's radio), checked once before review (music_check.py).
+CREATE TABLE IF NOT EXISTS music_checks (
+    ck_clip_id  INTEGER PRIMARY KEY,
+    verdict     TEXT NOT NULL,             -- likely | possible | none
+    song        TEXT NOT NULL DEFAULT '',
+    evidence    TEXT NOT NULL DEFAULT '',
+    model       TEXT NOT NULL,
+    checked_at  TEXT NOT NULL
+);
+
 -- Small cached values (the Twitch GTA 6 game id).
 CREATE TABLE IF NOT EXISTS kv (
     key        TEXT PRIMARY KEY,

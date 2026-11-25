@@ -69,7 +69,7 @@ class Watcher:
                  streamers: list[Streamer], writer: TitleWriter, make_session: SessionFactory,
                  check_live: Callable[[str], LiveCheck] = check_youtube_live, allow_non_gta: bool = False,
                  clip_source: TwitchClipSource | None = None, publisher=None, silent=None,
-                 compiler=None, compilation_writer=None, editor=None,
+                 compiler=None, compilation_writer=None, editor=None, music=None,
                  clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep):
         self.cfg = cfg
         self.client = client
@@ -88,6 +88,7 @@ class Watcher:
         self.compiler = compiler
         self.editor = editor             # an EditorWorker: Claude edits new clips in the background
         self._last_edit = -1e18
+        self.music = music               # a MusicChecker: new clips are checked for licensed songs
         self._last_compile = -1e18
         self.sessions: dict[str, LiveSession] = {}      # streamer name -> session
         self.clip_source = clip_source        # Twitch's top GTA 6 clips, every twitch_clips.every_minutes
@@ -180,9 +181,15 @@ class Watcher:
                     log.info("Compilation %d queued for Clips Kitty", comp)
             except Exception:   # Claude, ffmpeg or a file hiccuped: try again next time
                 log.exception("Problem making compilations")
-        if self.editor is not None and now - self._last_edit >= EDITOR_EVERY_S:
+        if (self.editor is not None or self.music is not None) and now - self._last_edit >= EDITOR_EVERY_S:
             self._last_edit = now
-            self.editor.tick()
+            if self.music is not None:   # first, so a clip with a licensed song isn't edited for nothing
+                try:
+                    self.music.run_once()
+                except Exception:   # Claude or Clips Kitty hiccuped: the clips are checked next time
+                    log.exception("Problem checking clips for music")
+            if self.editor is not None:
+                self.editor.tick()
         if self.publisher is not None and now - self._last_held >= HELD_UPLOADS_EVERY_S:
             self._last_held = now
             try:

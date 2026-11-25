@@ -18,6 +18,7 @@ from typing import Callable
 
 from .. import db
 from ..clipskitty import ClipsKittyClient, ClipsKittyError
+from ..music_check import music_of
 from ..postprocess import has_credit
 from ..streamers import PermissionDenied, Streamer
 from ..vod import _streamer_named
@@ -49,6 +50,7 @@ class Card:
     source_title: str
     created_at: str
     edit: dict | None = None        # the Claude editor's latest edit of it (state, seconds, notes, ...)
+    music: dict | None = None       # the music check found a (possible) licensed song: verdict, song, evidence
 
     def as_dict(self) -> dict:
         return dict(self.__dict__)
@@ -125,6 +127,7 @@ class ReviewService:
             card.edit = {"id": e["id"], "state": e["state"], "seconds": e["seconds"],
                          "notes": json.loads(e["notes"] or "[]"), "request": e["request"], "error": e["error"],
                          "cost_usd": round(e["cost_usd"] or 0, 2)}
+        card.music = music_of(self.conn, card.id)
         return card
 
     # -- the Claude editor -------------------------------------------------------------

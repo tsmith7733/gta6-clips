@@ -200,6 +200,14 @@ editor:
   sounds: true               # sound effects and music in edits (stage 1 of the studio)
   sounds_dir: sounds         # sfx/ and music/ in here; starter effects are made by themselves
 
+# The music check (2026-11-25): GTA 6's radio plays licensed songs and YouTube blocks Shorts with one
+# (clip 107). Claude Haiku reads each clip's transcript and chat before review; a likely song moves the
+# clip to 'Needs a fix' with a note. Needs ANTHROPIC_API_KEY; well under a cent per clip.
+music_check:
+  enabled: true
+  model: claude-haiku-5-5
+  per_run: 20               # clips checked each time the watcher looks (every 10 minutes)
+
 # Phase 4: the review page (python -m gta6clips review). Only ever on 127.0.0.1.
 review:
   port: 8770                 # not 8765, which is Clips Kitty's

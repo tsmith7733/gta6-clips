@@ -106,6 +106,10 @@ def _parser() -> argparse.ArgumentParser:
                                                 "publish.channels (a second channel, besides Clips Kitty's)")
     cy.add_argument("channel", help="its key in publish.channels, e.g. cutscene_skipped")
 
+    mc = sub.add_parser("music-check", help="check clips waiting for review for licensed songs (Claude Haiku); "
+                                            "the watcher does this by itself")
+    mc.add_argument("--clip", type=int, help="check this clip (again)")
+    mc.add_argument("--limit", type=int, default=50, help="at most this many clips (default 50)")
     sub.add_parser("sounds", help="list the editor's sound effects and music (makes the starter effects if missing)")
     sub.add_parser("notify-test", help="send a test notification to Discord (DISCORD_WEBHOOK_URL in .env)")
 
@@ -194,6 +198,8 @@ def main(argv: list[str] | None = None) -> int:
             return _compile(cfg, client, conn, streamers, args)
         if args.command == "edit":
             return _edit(cfg, client, conn, args)
+        if args.command == "music-check":
+            return _music_check(cfg, client, conn, args)
         if args.command == "hunt":
             return _hunt(cfg, client, conn, streamers, args)
         if args.command == "review":
@@ -526,7 +532,7 @@ def _watch(cfg, client, conn, streamers, writer, args) -> int:
                       publisher=_held_publisher(cfg, client, conn, streamers),
                       silent=lambda path, s, e: silent_stretch(ffmpeg, path, s, e),
                       compiler=compiler, compilation_writer=_compilation_writer(cfg) if compiler else None,
-                      editor=_watch_editor(cfg, client))
+                      editor=_watch_editor(cfg, client), music=_music_checker(cfg, client, conn))
     watcher.run(stop_after_s=args.minutes * 60 if args.minutes else None)
     print("\nStopped watching. Nothing is published. Review the clips with: python -m gta6clips clips")
     return 0
@@ -871,6 +877,40 @@ def cmd_sounds(cfg) -> int:
     for s in lib.sounds.values():
         if s.credit:
             print(f"  credit for {s.id}: {s.credit}")
+    return 0
+
+
+def _music_checker(cfg, client, conn):
+    """Checks new clips for licensed songs before review, or None when it's off or there's no Claude key."""
+    from .llm.music import ClaudeMusicCheck
+    from .music_check import MusicChecker, MusicSettings
+
+    settings = MusicSettings.from_config(cfg)
+    if not settings.enabled or not env("ANTHROPIC_API_KEY"):
+        return None
+    return MusicChecker(conn=conn, client=client, check=ClaudeMusicCheck(model=settings.model), settings=settings)
+
+
+def _music_check(cfg, client, conn, args) -> int:
+    checker = _music_checker(cfg, client, conn)
+    if checker is None:
+        print("The music check needs music_check.enabled and ANTHROPIC_API_KEY in .env.", file=sys.stderr)
+        return 2
+    if args.clip:
+        row = conn.execute("SELECT c.*, COALESCE(w.source_title, '') AS source_title, w.start_utc AS w_start_utc, "
+                           "w.stream_id AS w_stream_id FROM clips c LEFT JOIN windows w ON w.id = c.window_id "
+                           "WHERE c.ck_clip_id = ?", (args.clip,)).fetchone()
+        if row is None:
+            print(f"We don't track clip {args.clip}.", file=sys.stderr)
+            return 1
+        results = [(args.clip, checker.check_clip(row))]
+    else:
+        results = checker.run_once(limit=args.limit)
+    for clip_id, v in results:
+        print(f"  clip {clip_id}: {v.verdict}" + (f" ({v.song})" if v.song else "") +
+              (f": {v.evidence}" if v.evidence else ""))
+    held = sum(v.flagged for _, v in results)
+    print(f"Checked {len(results)} clip(s); {held} held back in 'Needs a fix' for a likely licensed song.")
     return 0
 
 

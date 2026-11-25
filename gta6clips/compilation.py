@@ -359,7 +359,9 @@ class Compiler:
         rows = self.conn.execute(
             "SELECT f.*, w.local_path, w.start_utc AS w_start_utc, s.video_id AS s_video_id FROM fail_checks f"
             " JOIN windows w ON w.id = f.window_id JOIN streams s ON s.id = w.stream_id"
+            " LEFT JOIN music_checks m ON m.ck_clip_id = f.ck_clip_id"   # a licensed song: YouTube blocks it
             " WHERE f.streamer = ? AND f.is_fail = 1 AND f.excluded = 0 AND f.compilation_id IS NULL"
+            " AND COALESCE(m.verdict, '') != 'likely'"
             " AND f.checked_at >= ?", (streamer.name, self._since())).fetchall()
         s = self.settings
         parts = []

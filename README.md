@@ -250,6 +250,10 @@ Only use sounds and music you're allowed to put in a YouTube video (the YouTube 
 
 **Motion (studio stage 2).** Zooms come in three styles: a **punch** (cut straight in on a yell or an impact), a **smooth** zoom that eases in and back out (to sit on a reaction), and a slow **push** that builds up to a payoff. Parts of a clip can play in slow motion or fast forward, with a speed ramp that eases in and out of it (normal, slow-mo on the hit, back to normal; the sound follows the speed). Cuts that jump to another place or moment can get a **whip** (a fast blurred slide) or a **zoom** transition (punching through with blur). A freeze frame can slowly push in. Claude picks these; the self-check looks at the result.
 
+## The music check
+
+GTA 6's radio plays real, licensed songs, and YouTube blocks a Short with one in it (clip 107, "A Song Demands a New Car", was blocked for Fergie's "Glamorous"). Before you review a clip, Claude Haiku reads its transcript (sung lyrics show up there) and the live chat from that moment (people name the song or spell it out). A clip with a **likely** licensed song goes to the **Needs a fix** tab with a red note naming the song; **Send to review as is** brings it back if you disagree. A **possible** one only gets the warning on its card. Compilations never use a clip with a likely song. The watcher does this by itself every 10 minutes; `python -m gta6clips music-check [--clip ID]` runs it now. Each check costs about $0.0003. It can't catch an instrumental playing quietly that nobody mentions.
+
 ## Clip length and the quality check
 
 Clips Kitty's own moment finders kept making 12–25 s clips that cut the story short. So this repo ships a small Clips Kitty plugin, `plugins\exact-moments` (no network; it only reads the transcript). We tell it the exact range and it makes one clip of that range, moving each end up to 4 s to a sentence break. Clips Kitty still does the split layout, captions, titles and rendering. The range is:

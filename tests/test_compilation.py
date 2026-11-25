@@ -149,6 +149,16 @@ def test_fails_become_a_compilation_on_the_review_page(cfg, ck, ck_state, conn, 
     assert not any("Length" in n for n in json.loads(clip["notes"]))   # not held to the single-clip length
 
 
+def test_a_clip_with_a_licensed_song_is_left_out(cfg, ck, conn, streamers, workdir):
+    _setup(conn, workdir)
+    conn.execute("INSERT INTO music_checks (ck_clip_id, verdict, song, evidence, model, checked_at) VALUES "
+                 "(506, 'likely', 'Glamorous by Fergie', '', 'm', 'now')")   # the strongest fail (clip 107's song)
+    comp = _compiler(cfg, conn, ck, streamers, workdir, FakeJudge(_fails(9, 8, 8, 7, 6, 6, 6)))
+    comp.run_once()
+    parts = json.loads(conn.execute("SELECT parts FROM compilations").fetchone()[0])
+    assert parts and 506 not in [p["clip"] for p in parts]
+
+
 def test_too_few_fails_waits(cfg, ck, conn, streamers, workdir):
     _setup(conn, workdir, n=4)
     comp = _compiler(cfg, conn, ck, streamers, workdir, FakeJudge(_fails(9, 9, 9, 9)))
