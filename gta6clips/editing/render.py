@@ -183,7 +183,8 @@ def build_graph(plan: EditPlan, shots: list[Shot], workdir: Path) -> tuple[str, 
     chain, files = [], []
     for n, (a, b, t) in enumerate(overlays):
         name = f"t{n}.txt"
-        (workdir / name).write_text(_wrap(t.text, WRAP[t.size]), encoding="utf-8")
+        # newline="\n": on Windows text mode writes \r\n, and drawtext draws the \r as a blank line.
+        (workdir / name).write_text(_wrap(t.text, WRAP[t.size]), encoding="utf-8", newline="\n")
         files.append(name)
         chain.append(f"drawtext=fontfile=font.ttf:textfile={name}:fontsize={FONT_SIZES[t.size]}:fontcolor=white:"
                      f"borderw=7:bordercolor=black:text_align=C:line_spacing=6:x=(w-text_w)/2:y={_text_y(t.position)}:"

@@ -85,7 +85,9 @@ def _parser() -> argparse.ArgumentParser:
     ed = sub.add_parser("edit", help="edit a clip Clips Kitty rendered: punch-in zooms, replays, text (the editor's "
                                      "engine; nothing is uploaded)")
     ed.add_argument("clip", type=int, help="the Clips Kitty clip id")
-    ed.add_argument("--plan", help="an edit plan (JSON); without it a sample plan is made from the loud moments")
+    ed.add_argument("--plan", help="render this edit plan (JSON) instead of asking Claude")
+    ed.add_argument("--sample", action="store_true", help="a free sample plan from the loud moments, no Claude")
+    ed.add_argument("--note", default="", help="a note for Claude about this clip (also kept for later edits)")
     ed.add_argument("--out", help="where to write the edited video (default: data/edits/clip<id>_<n>.mp4)")
 
     review = sub.add_parser("review", help="open the review page: watch clips, pick titles, approve or reject "
@@ -358,11 +360,15 @@ def _review(cfg, client, streamers, args) -> int:
     service = ReviewService(conn=shared, client=client, streamers=streamers)
     publisher = PublishService(conn=shared, client=client, streamers=streamers, cfg=cfg,
                                is_live=_live_check(streamers), uploaders=_uploaders(cfg))
+    from .editing import EditorWorker
+
+    make = _editor_factory(cfg, client)
+    worker = EditorWorker(make) if make is not None else None
     url = f"http://127.0.0.1:{port}/"
     print(f"Review page: {url}  (Ctrl+C stops it; nothing is published from it)")
     if not args.no_browser:
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()
-    serve(service, client, port=port, publisher=publisher,
+    serve(service, client, port=port, publisher=publisher, editor=worker,
           auto_schedule=cfg.get("publish.auto_schedule", False) is True)
     return 0
 
@@ -512,7 +518,8 @@ def _watch(cfg, client, conn, streamers, writer, args) -> int:
                       clip_source=_clip_source(cfg, conn, streamers, required=False),
                       publisher=_held_publisher(cfg, client, conn, streamers),
                       silent=lambda path, s, e: silent_stretch(ffmpeg, path, s, e),
-                      compiler=compiler, compilation_writer=_compilation_writer(cfg) if compiler else None)
+                      compiler=compiler, compilation_writer=_compilation_writer(cfg) if compiler else None,
+                      editor=_watch_editor(cfg, client))
     watcher.run(stop_after_s=args.minutes * 60 if args.minutes else None)
     print("\nStopped watching. Nothing is published. Review the clips with: python -m gta6clips clips")
     return 0
@@ -753,6 +760,30 @@ def _edit(cfg, client, conn, args) -> int:
     if not source.is_file():
         client.download_media(args.clip, source)
     ffmpeg = find_ffmpeg(cfg)
+    if not args.plan and not args.sample:
+        if args.out:
+            print("--out only works with --plan or --sample.", file=sys.stderr)
+            return 2
+        make = _editor_factory(cfg, client)
+        if make is None:
+            print("Claude edits need ANTHROPIC_API_KEY in .env (or use --sample).", file=sys.stderr)
+            return 2
+        editor = make()
+        if args.note:
+            _save_feedback(editor.conn, args.clip, args.note)
+        if not editor.can_afford():
+            print(f"The editor has spent ${editor.spent():.2f} of its ${editor.settings.weekly_budget_usd:.2f} "
+                  "this week.", file=sys.stderr)
+            return 1
+        result = editor.edit(args.clip, args.note)
+        for n in result.notes:
+            print(f"  {n}")
+        if result.state != "ready":
+            print(f"No edit: {result.error}", file=sys.stderr)
+            return 1
+        print(f"Edited video: {result.path}  (cost ${result.cost_usd:.2f}; ${editor.spent():.2f} of "
+              f"${editor.settings.weekly_budget_usd:.2f} spent this week)\nNothing was uploaded.")
+        return 0
     if args.plan:
         data = json.loads(Path(args.plan).read_text(encoding="utf-8"))
     else:
@@ -778,3 +809,39 @@ def _edit(cfg, client, conn, args) -> int:
         return 1
     print(f"Edited video: {dest}\nIts plan: {dest.with_suffix('.plan.json')}\nNothing was uploaded.")
     return 0
+
+
+def _save_feedback(conn, clip_id: int | None, text: str, edit_id: int | None = None) -> None:
+    text = " ".join(text.split())[:500]
+    if text:
+        conn.execute("INSERT INTO editor_feedback (ck_clip_id, edit_id, text, created_at) VALUES (?, ?, ?, ?)",
+                     (clip_id, edit_id, text, db._now()))
+        conn.commit()
+
+
+def _editor_factory(cfg, client):
+    """Makes Editors (each with its own database connection), or None without a Claude key."""
+    from .editing import Editor, EditorSettings
+    from .editing.editor import ClaudePlanWriter
+
+    if not env("ANTHROPIC_API_KEY"):
+        return None
+    settings = EditorSettings.from_config(cfg)
+    ffmpeg = find_ffmpeg(cfg)
+    edits = cfg.path("paths.edits") if cfg.get("paths.edits") else cfg.base_dir / "data" / "edits"
+    writer = ClaudePlanWriter(model=settings.model, effort=settings.effort)
+
+    def make():
+        return Editor(conn=db.connect(cfg.path("paths.database"), threads=True), client=client, ffmpeg=ffmpeg,
+                      writer=writer, edits_dir=edits, settings=settings)
+    return make
+
+
+def _watch_editor(cfg, client):
+    """The watcher's background editor (edits new clips while it records), or None when it's off."""
+    from .editing import EditorSettings, EditorWorker
+
+    if not EditorSettings.from_config(cfg).enabled or cfg.get("editor.auto", True) is not True:
+        return None
+    make = _editor_factory(cfg, client)
+    return EditorWorker(make) if make is not None else None

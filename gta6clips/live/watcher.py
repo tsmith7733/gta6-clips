@@ -36,6 +36,7 @@ log = logging.getLogger(__name__)
 
 SUPPORTED = ("youtube",)
 HELD_UPLOADS_EVERY_S = 600.0
+EDITOR_EVERY_S = 600.0           # how often the watcher looks for new clips to edit
 
 
 @dataclass(frozen=True)
@@ -68,7 +69,7 @@ class Watcher:
                  streamers: list[Streamer], writer: TitleWriter, make_session: SessionFactory,
                  check_live: Callable[[str], LiveCheck] = check_youtube_live, allow_non_gta: bool = False,
                  clip_source: TwitchClipSource | None = None, publisher=None, silent=None,
-                 compiler=None, compilation_writer=None,
+                 compiler=None, compilation_writer=None, editor=None,
                  clock: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep):
         self.cfg = cfg
         self.client = client
@@ -85,6 +86,8 @@ class Watcher:
                                      clock=clock, silent=silent, compilation_writer=compilation_writer)
         # Driving-fail compilations (compilation.Compiler), every compilations.every_minutes.
         self.compiler = compiler
+        self.editor = editor             # an EditorWorker: Claude edits new clips in the background
+        self._last_edit = -1e18
         self._last_compile = -1e18
         self.sessions: dict[str, LiveSession] = {}      # streamer name -> session
         self.clip_source = clip_source        # Twitch's top GTA 6 clips, every twitch_clips.every_minutes
@@ -177,6 +180,9 @@ class Watcher:
                     log.info("Compilation %d queued for Clips Kitty", comp)
             except Exception:   # Claude, ffmpeg or a file hiccuped: try again next time
                 log.exception("Problem making compilations")
+        if self.editor is not None and now - self._last_edit >= EDITOR_EVERY_S:
+            self._last_edit = now
+            self.editor.tick()
         if self.publisher is not None and now - self._last_held >= HELD_UPLOADS_EVERY_S:
             self._last_held = now
             try:

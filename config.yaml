@@ -182,12 +182,21 @@ compilations:
     after_seconds: 10
     frames: 10
 
-# The Claude editor (2026-11-24). Step 1, built: the engine that renders an edit plan on a clip
-# Clips Kitty made (punch-in zooms on the webcam or game, shake, slow replays, freeze frames, text,
-# a hook, flashes); `edit CLIP [--plan FILE]`. Step 2 has Claude write the plans; it stops for the week
-# once weekly_budget_usd of Claude calls is spent. Nothing edited is uploaded yet.
+# The Claude editor (2026-11-24). Step 1: the engine that renders an edit plan on a clip Clips Kitty
+# made (punch-in zooms on the webcam or game, shake, slow replays, freeze frames, text, a hook,
+# flashes). Step 2: Claude (Opus) writes each plan from 12 frames, the transcript and the loud moments,
+# looks at frames of its render and fixes it once; the edit shows next to the original on the review
+# page, where your suggestions are kept for every later edit. No new edit starts once the last 7 days'
+# editor calls plus one edit ($0.40) would pass weekly_budget_usd. Nothing edited is uploaded yet.
 editor:
+  enabled: true
+  auto: true                 # the watcher edits new clips waiting for review in the background
+  streamers: []              # empty: every streamer's clips
   weekly_budget_usd: 10
+  model: claude-opus-5-5
+  effort: medium
+  per_run: 2                 # clips edited each time the watcher looks (every 10 minutes)
+  self_check: true
 
 # Phase 4: the review page (python -m gta6clips review). Only ever on 127.0.0.1.
 review:

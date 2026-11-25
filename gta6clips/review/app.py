@@ -13,7 +13,7 @@ from importlib import resources
 from typing import Callable
 
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
 from ..clipskitty import ClipsKittyClient, ClipsKittyError
 from ..publish.service import PublishService
@@ -25,7 +25,7 @@ LOOPBACK = ("127.0.0.1", "localhost")
 
 
 def create_app(service: ReviewService, client: ClipsKittyClient, publisher: PublishService | None = None,
-               *, auto_schedule: bool = False) -> FastAPI:
+               *, auto_schedule: bool = False, editor=None) -> FastAPI:
     app = FastAPI(title="GTA 6 clips review", docs_url=None, redoc_url=None, openapi_url=None)
     lock = threading.Lock()          # one sqlite connection, shared by the worker threads
     page = resources.files(__package__).joinpath("page.html").read_text(encoding="utf-8")
@@ -140,6 +140,33 @@ def create_app(service: ReviewService, client: ClipsKittyClient, publisher: Publ
     def undo(clip_id: int, body: dict = Body(default={})):
         return run(lambda: service.undo(clip_id).as_dict())
 
+    @app.get("/edits/{edit_id}.mp4")
+    def edited(edit_id: int):
+        return FileResponse(run(lambda: service.edit_file(edit_id)), media_type="video/mp4")
+
+    @app.post("/api/clips/{clip_id}/edit")
+    def edit(clip_id: int, body: dict = Body(default={})):
+        """Claude edits the clip (again), with the owner's note; it runs in the background."""
+        if editor is None:
+            raise HTTPException(404, "The Claude editor isn't set up (it needs ANTHROPIC_API_KEY in .env).")
+        def go():
+            if service.card(clip_id).status not in ("pending_review", "spoiler_hold", "approved", "needs_fix"):
+                raise ReviewError("Only clips that aren't published or rejected can be edited.")
+            note = service.note_for_editor(clip_id, str(body.get("note", "")))
+            return note
+        note = run(go)
+        editor.request(clip_id, note)
+        return {"started": True}
+
+    @app.post("/api/clips/{clip_id}/note")
+    def note(clip_id: int, body: dict = Body(...)):
+        """A suggestion for the editor's later edits, without editing this clip again."""
+        return {"saved": run(lambda: service.note_for_editor(clip_id, str(body.get("note", ""))))}
+
+    @app.post("/api/clips/{clip_id}/edit/drop")
+    def drop_edit(clip_id: int, body: dict = Body(default={})):
+        return run(lambda: service.drop_edit(clip_id).as_dict())
+
     @app.get("/media/{clip_id}")
     def media(clip_id: int):
         """Only clips we track; the browser then reads the file straight from Clips Kitty, which
@@ -152,7 +179,7 @@ def create_app(service: ReviewService, client: ClipsKittyClient, publisher: Publ
 
 
 def serve(service: ReviewService, client: ClipsKittyClient, *, port: int,
-          publisher: PublishService | None = None, auto_schedule: bool = False) -> None:
+          publisher: PublishService | None = None, auto_schedule: bool = False, editor=None) -> None:
     import uvicorn
 
-    uvicorn.run(create_app(service, client, publisher, auto_schedule=auto_schedule), host="127.0.0.1", port=port, log_level="warning")
+    uvicorn.run(create_app(service, client, publisher, auto_schedule=auto_schedule, editor=editor), host="127.0.0.1", port=port, log_level="warning")

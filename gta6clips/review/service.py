@@ -48,6 +48,7 @@ class Card:
     notes: list[str]
     source_title: str
     created_at: str
+    edit: dict | None = None        # the Claude editor's latest edit of it (state, seconds, notes, ...)
 
     def as_dict(self) -> dict:
         return dict(self.__dict__)
@@ -107,7 +108,7 @@ class ReviewService:
             "SELECT c.*, COALESCE(w.source_title, '') AS source_title FROM clips c "
             f"LEFT JOIN windows w ON w.id = c.window_id WHERE {where} "
             "ORDER BY c.score DESC, c.created_at DESC", args).fetchall()
-        return [self._card(r) for r in rows]
+        return [self._with_edit(self._card(r)) for r in rows]
 
     def card(self, clip_id: int) -> Card:
         row = self.conn.execute(
@@ -115,7 +116,46 @@ class ReviewService:
             "LEFT JOIN windows w ON w.id = c.window_id WHERE c.ck_clip_id = ?", (int(clip_id),)).fetchone()
         if row is None:
             raise ReviewError(f"We don't track clip {clip_id}.")
-        return self._card(row)
+        return self._with_edit(self._card(row))
+
+    def _with_edit(self, card: Card) -> Card:
+        e = self.conn.execute("SELECT * FROM edits WHERE ck_clip_id = ? AND state != 'replaced' "
+                              "ORDER BY id DESC LIMIT 1", (card.id,)).fetchone()
+        if e is not None:
+            card.edit = {"id": e["id"], "state": e["state"], "seconds": e["seconds"],
+                         "notes": json.loads(e["notes"] or "[]"), "request": e["request"], "error": e["error"],
+                         "cost_usd": round(e["cost_usd"] or 0, 2)}
+        return card
+
+    # -- the Claude editor -------------------------------------------------------------
+    def edit_file(self, edit_id: int) -> Path:
+        e = self.conn.execute("SELECT * FROM edits WHERE id = ?", (int(edit_id),)).fetchone()
+        if e is None or not e["path"]:
+            raise ReviewError(f"There's no edited video {edit_id}.")
+        self.card(e["ck_clip_id"])     # only clips we track
+        path = Path(e["path"])
+        if not path.is_file():
+            raise ReviewError(f"The edited video {path.name} isn't on disk any more.")
+        return path
+
+    def note_for_editor(self, clip_id: int, text: str) -> str:
+        """Keeps the owner's suggestion: it goes into every later edit plan."""
+        card = self.card(clip_id)
+        text = " ".join((text or "").split())[:500]
+        if text:
+            self.conn.execute("INSERT INTO editor_feedback (ck_clip_id, edit_id, text, created_at) VALUES (?, ?, ?, ?)",
+                              (clip_id, (card.edit or {}).get("id"), text, db._now()))
+            self.conn.commit()
+        return text
+
+    def drop_edit(self, clip_id: int) -> Card:
+        """The owner prefers the original: the edit stays on disk but won't be used."""
+        card = self.card(clip_id)
+        if not card.edit or card.edit["state"] != "ready":
+            raise ReviewError("This clip has no finished edit.")
+        self.conn.execute("UPDATE edits SET state = 'dropped' WHERE id = ?", (card.edit["id"],))
+        self.conn.commit()
+        return self.card(clip_id)
 
     @staticmethod
     def _card(r: sqlite3.Row) -> Card:

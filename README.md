@@ -223,7 +223,7 @@ It refuses while a live stream is being recorded, because many YouTube reads at 
 
 The card's notes list the clips it's made from. `--drop` works until you approve it. Needs `ANTHROPIC_API_KEY` in `.env`; without it compilations are off and everything else runs as before.
 
-## The editor (step 1: the engine)
+## The editor
 
 The editor makes our Shorts look hand-edited: punch-in zooms on the peanut when he yells, a zoom with a shake and a flash on a crash, a slow "RUN IT BACK" replay, a freeze frame with a "BRUH", short captions, a hook in the first 2 seconds, and cuts that drop dead air. It works on the vertical video Clips Kitty rendered and writes a new file in `data\edits`. Nothing is uploaded.
 
@@ -232,7 +232,11 @@ The editor makes our Shorts look hand-edited: punch-in zooms on the peanut when 
 .venv\Scripts\python.exe -m gta6clips edit 171 --plan my.plan.json # an edit plan written by hand (or by Claude, next)
 ```
 
-Each edit is described by a plan (JSON): `keep` ranges, `zooms` (target `cam`, `game` or a `box`, `scale`, `shake`), `replays` (range, `speed`, `label`), `freezes`, `texts` (`top`/`middle`/`bottom`, size `s`/`m`/`l`), `flashes` and a `hook`, all in seconds of the Clips Kitty clip. Each edit's plan is saved next to it. Next: Claude writes these plans itself (step 2), within `editor.weekly_budget_usd` ($10).
+Each edit is described by a plan (JSON): `keep` ranges, `zooms` (target `cam`, `game` or a `box`, `scale`, `shake`), `replays` (range, `speed`, `label`), `freezes`, `texts` (`top`/`middle`/`bottom`, size `s`/`m`/`l`), `flashes` and a `hook`, all in seconds of the Clips Kitty clip. Each edit's plan is saved next to it. 
+
+**Claude edits (step 2).** `python -m gta6clips edit 171` has Claude (Opus) write the plan from 12 frames of the clip, its transcript and where it gets loud. The clip is rendered, then Claude looks at frames of its own render at each move (is the punch-in on his face, is the text readable and off his face) and fixes the plan once if needed. An edit costs about $0.10–0.25. The watcher does this by itself for new clips waiting for review (`editor.auto`, 2 every 10 minutes), and no new edit starts once the last 7 days' editing would pass `editor.weekly_budget_usd` ($10). `--note "..."` gives Claude a note for that clip; `--sample` makes a free plan without Claude.
+
+On the review page an edited clip shows **Original** and **Edited by Claude** side by side, with Claude's reasons. Under them: write a suggestion and press **Edit again with this** (Claude redoes this clip with it), **Just save the suggestion**, or **Use the original**. Every suggestion is kept and given to Claude for all later edits, so it learns how you like them. Approving still publishes Clips Kitty's version for now; uploading the edited one comes next (step 3).
 
 ## Clip length and the quality check
 

@@ -161,6 +161,44 @@ CREATE TABLE IF NOT EXISTS compilations (
     created_at  TEXT NOT NULL
 );
 
+-- The Claude editor's edits of clips (gta6clips/editing/editor.py). Times are UTC epoch seconds.
+CREATE TABLE IF NOT EXISTS edits (
+    id          INTEGER PRIMARY KEY,
+    ck_clip_id  INTEGER NOT NULL,
+    state       TEXT NOT NULL DEFAULT 'working',   -- working | ready | failed | dropped | replaced
+    path        TEXT NOT NULL DEFAULT '',
+    plan        TEXT NOT NULL DEFAULT '{}',
+    notes       TEXT NOT NULL DEFAULT '[]',        -- Claude's reasons and its self-check
+    request     TEXT NOT NULL DEFAULT '',          -- the owner's note this edit was made for
+    error       TEXT NOT NULL DEFAULT '',
+    cost_usd    REAL NOT NULL DEFAULT 0,
+    seconds     REAL,
+    created_at  REAL NOT NULL,
+    updated_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS edits_clip ON edits(ck_clip_id);
+
+-- What each Claude call cost (the editor's weekly budget reads this).
+CREATE TABLE IF NOT EXISTS llm_usage (
+    id            INTEGER PRIMARY KEY,
+    at            REAL NOT NULL,
+    model         TEXT NOT NULL,
+    purpose       TEXT NOT NULL,
+    clip_id       INTEGER,
+    input_tokens  INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    cost_usd      REAL NOT NULL
+);
+
+-- The owner's suggestions to the editor, from the review page; every later plan reads them.
+CREATE TABLE IF NOT EXISTS editor_feedback (
+    id          INTEGER PRIMARY KEY,
+    ck_clip_id  INTEGER,
+    edit_id     INTEGER,
+    text        TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+
 -- Small cached values (the Twitch GTA 6 game id).
 CREATE TABLE IF NOT EXISTS kv (
     key        TEXT PRIMARY KEY,

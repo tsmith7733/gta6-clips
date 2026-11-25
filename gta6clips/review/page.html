@@ -34,10 +34,18 @@
   nav button.on { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
   nav .n { display: inline-block; min-width: 20px; padding: 0 6px; margin-left: 6px; border-radius: 10px;
            background: var(--chip); font-size: 12px; text-align: center; }
-  main { padding: 20px; display: grid; gap: 18px; grid-template-columns: repeat(auto-fill, minmax(560px, 1fr)); }
+  main { padding: 20px; display: grid; gap: 18px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 760px), 1fr)); }
   .empty { color: var(--muted); padding: 40px 0; grid-column: 1 / -1; text-align: center; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px;
-          display: grid; grid-template-columns: 230px 1fr; gap: 16px; }
+          display: grid; grid-template-columns: auto 1fr; gap: 16px; }
+  .vids { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; justify-content: center; }
+  .vids figure { margin: 0; }
+  .vids figcaption { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .editor { margin: 10px 0 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+  .editor ul { margin: 4px 0 6px; padding-left: 18px; }
+  .editor textarea { width: 100%; box-sizing: border-box; font: inherit; color: var(--ink); background: var(--bg);
+                     border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; min-height: 48px; }
+  .editor .actions { margin-top: 6px; }
   video { width: 230px; aspect-ratio: 9 / 16; background: #000; border-radius: 8px; }
   .meta { color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 6px 12px; }
   .meta b { color: var(--ink); font-weight: 600; }
@@ -163,6 +171,20 @@ function card(c) {
       failed: `<span class="bad">The upload failed.</span> ${esc(u.error)}`,
       interrupted: `<span class="bad">The upload was interrupted.</span> Check your channel before trying again; it may be there.`,
     }[u.state] || esc(u.state)}${u.url ? ` <a href="${esc(u.url)}" target="_blank" rel="noopener">Open on YouTube</a>` : ""}</div>`;
+  const e = c.edit;
+  const editable = !["published", "rejected"].includes(c.status);
+  const editState = !e ? "" : e.state === "working" ? `<p><b>Claude is editing this clip…</b> It shows up here in a minute or two.</p>`
+    : e.state === "failed" ? `<p class="bad">Claude's edit didn't work: ${esc(e.error)}</p>`
+    : e.state === "dropped" ? `<p>You chose the original over Claude's edit.</p>`
+    : `<p><b>Claude's edit</b> (${e.seconds ?? "?"}s, $${e.cost_usd}) is next to the original${e.request ? `, made for your note “${esc(e.request)}”` : ""}:</p>
+       <ul>${e.notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul>`;
+  const editor = !editable ? "" : `<div class="editor">${editState}
+      <textarea class="ednote" maxlength="500" placeholder="A suggestion for the editor (e.g. zoom in on him more, less text, shorter hook). It's kept for all later edits."></textarea>
+      <div class="actions">
+        <button data-do="edit">${e && e.state !== "failed" ? "Edit again with this" : "Have Claude edit it"}</button>
+        <button data-do="note">Just save the suggestion</button>
+        ${e && e.state === "ready" ? `<button data-do="edit/drop">Use the original</button>` : ""}
+      </div></div>`;
   const buttons = open ? `
       ${c.status === "spoiler_hold" ? `<label class="confirm"><input type="checkbox" class="notspoiler"> Not a spoiler</label>` : ""}
       <button class="primary" data-do="approve">Approve</button>
@@ -178,7 +200,10 @@ function card(c) {
       <button class="danger" data-do="reject">Reject</button>`
     : decided ? `<button data-do="undo">Back to review</button>` : "";
   return `<article class="card" data-id="${c.id}">
-    <video controls preload="metadata" src="/media/${c.id}"></video>
+    <div class="vids">
+      <figure>${e && e.state === "ready" ? "<figcaption>Original</figcaption>" : ""}<video controls preload="metadata" src="/media/${c.id}"></video></figure>
+      ${e && e.state === "ready" ? `<figure><figcaption>Edited by Claude</figcaption><video controls preload="metadata" src="/edits/${e.id}.mp4"></video></figure>` : ""}
+    </div>
     <div>
       <div class="meta"><b>${esc(c.streamer)}</b><span>clip ${c.id}</span><span>${c.seconds}s</span>
         <span>score ${c.score ?? "–"}</span>${c.channel ? `<span>→ ${esc(c.channel)}</span>` : ""}</div>
@@ -186,6 +211,7 @@ function card(c) {
       ${titleBlock}
       ${upload}
       ${notes}
+      ${editor}
       <details class="capdetails"><summary>Captions</summary><div class="caps">Loading…</div></details>
       <details><summary>Description and hashtags</summary><pre>${esc(c.description)}\n\n${esc(c.hashtags.join(" "))}</pre></details>
       <div class="actions">${buttons}</div>
@@ -230,13 +256,18 @@ async function act(el, what, button) {
     if (body.title.length > 100) return toast("YouTube titles can be at most 100 characters.", true);
   }
   if (what === "approve") body.confirm_spoiler = !!$(".notspoiler", el)?.checked;
+  if (what === "edit" || what === "note") {
+    body.note = $(".ednote", el)?.value.trim() || "";
+    if (what === "note" && !body.note) return toast("Write the suggestion first.", true);
+  }
   el.querySelectorAll("button").forEach(b => b.disabled = true);
   try {
     const c = await api(`/api/clips/${id}/${what}`, body);
     if (what === "approve" && c.scheduled) toast(`Approved and scheduled on ${c.scheduled.channel || "YouTube"} for ${c.scheduled.when}: ${c.title}`);
     else if (what === "approve" && c.not_scheduled) toast(`Approved, but not scheduled: ${c.not_scheduled}`, true);
     else toast({approve: `Approved: ${c.title}`, reject: "Rejected", undo: "Moved back", title: "Title saved",
-                "to-review": "Sent to review", rerender: "Sent to Clips Kitty again; the new clip will show up here when it's done"}[what]);
+                "to-review": "Sent to review", edit: "Claude is editing it; it shows up here when it's done",
+                note: "Saved: the editor will follow it from now on", "edit/drop": "Keeping the original", rerender: "Sent to Clips Kitty again; the new clip will show up here when it's done"}[what]);
     await load();
   } catch (err) {
     toast(err.message, true);
@@ -250,7 +281,7 @@ async function load(onlyIfChanged = false) {
   try {
     const data = await api(clipsUrl());
     drawTabs(data.counts);
-    const ids = channel + "/" + tab + ":" + data.clips.map(c => `${c.id}/${c.status}/${c.upload?.state || ""}`).join(",");
+    const ids = channel + "/" + tab + ":" + data.clips.map(c => `${c.id}/${c.status}/${c.upload?.state || ""}/${c.edit?.id || ""}${c.edit?.state || ""}`).join(",");
     if (onlyIfChanged && ids === shown) return;   // keep players and typed titles as they are
     shown = ids;
     if (data.followed?.length) toast(`Followed ${data.followed.length} clip(s) Clips Kitty rendered again.`);
