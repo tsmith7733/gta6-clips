@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from gta6clips.editing import PlanError, parse_plan, render
-from gta6clips.editing.editor import EditBrief, brief_content, check_schema
+from gta6clips.editing.editor import CHECK_SCHEMA, EditBrief, brief_content, fixed_plan
 from gta6clips.editing.plan import plan_schema
 from gta6clips.editing.render import audio_inputs, build_graph, build_shots, sound_events
 from gta6clips.editing.sounds import STARTER, Sound, SoundLibrary, make_starter
@@ -88,7 +88,10 @@ def test_claude_is_told_the_sounds_and_held_to_their_ids():
     assert schema["properties"]["replays"]["items"]["properties"]["sound"]["enum"][0] == "boom"
     assert schema["properties"]["music"]["properties"]["track"]["enum"] == ["beat"]
     assert "sounds" not in plan_schema()["properties"]                      # no library: no sound moves
-    assert check_schema(schema)["properties"]["fixed_plan"] is schema
+    # the check sends its fix back as JSON text (a nested plan schema was "too large" for the API)
+    assert CHECK_SCHEMA["properties"]["fixed_plan_json"] == {"type": "string"}
+    assert fixed_plan({"fixed_plan_json": '{"keep": []}'}) == {"keep": []}
+    assert fixed_plan({"fixed_plan_json": ""}) is None and fixed_plan({"fixed_plan_json": "[1]"}) is None
     brief = EditBrief(1, "x", "t", 10.0, [], [], [], None, sounds=lib.describe(), sfx_ids=("boom",))
     text = brief_content(brief)[-1]["text"]
     assert "- boom, 1.6 s: a boom" in text and "- beat, 120.0 s: chill beat" in text

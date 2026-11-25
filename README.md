@@ -248,6 +248,8 @@ sfx/too-loud.wav: {volume: 0.5}
 
 Only use sounds and music you're allowed to put in a YouTube video (the YouTube Audio Library in YouTube Studio, or Pixabay's free sound effects and music), or Content ID will claim the Short. Turn sound off with `editor.sounds: false`.
 
+**Motion (studio stage 2).** Zooms come in three styles: a **punch** (cut straight in on a yell or an impact), a **smooth** zoom that eases in and back out (to sit on a reaction), and a slow **push** that builds up to a payoff. Parts of a clip can play in slow motion or fast forward, with a speed ramp that eases in and out of it (normal, slow-mo on the hit, back to normal; the sound follows the speed). Cuts that jump to another place or moment can get a **whip** (a fast blurred slide) or a **zoom** transition (punching through with blur). A freeze frame can slowly push in. Claude picks these; the self-check looks at the result.
+
 ## Clip length and the quality check
 
 Clips Kitty's own moment finders kept making 12–25 s clips that cut the story short. So this repo ships a small Clips Kitty plugin, `plugins\exact-moments` (no network; it only reads the transcript). We tell it the exact range and it makes one clip of that range, moving each end up to 4 s to a sentence break. Clips Kitty still does the split layout, captions, titles and rendering. The range is:

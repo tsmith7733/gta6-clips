@@ -90,7 +90,7 @@ class FakeWriter:
             return Answer({"ok": True, "problems": [], "fixed_plan": plan}, "claude-opus-5-5", 5_000, 1_000)
         fixed = dict(plan, zooms=[{"start": 1, "end": 3, "target": "cam", "scale": 1.6}],
                      notes=["punch-in on his reaction, a bit wider"])
-        return Answer({"ok": False, "problems": ["the zoom cut his face in half"], "fixed_plan": fixed},
+        return Answer({"ok": False, "problems": ["the zoom cut his face in half"], "fixed_plan_json": json.dumps(fixed)},
                       "claude-opus-5-5", 5_000, 1_000)
 
 
@@ -136,6 +136,20 @@ def test_claude_plans_we_render_it_checks_and_fixes(tmp_path):
     again = editor.edit(7)
     states = [r[0] for r in editor.conn.execute("SELECT state FROM edits ORDER BY id")]
     assert again.state == "ready" and states == ["replaced", "ready"]
+
+
+@needs_ffmpeg
+def test_a_failed_self_check_keeps_the_first_render(tmp_path):
+    from gta6clips.editing.editor import EditorError
+
+    class NoCheck(FakeWriter):
+        def check(self, brief, plan, frames):
+            raise EditorError("Claude API error 400: The compiled grammar is too large")
+
+    editor = _editor(tmp_path, NoCheck(), src=_source(tmp_path))
+    result = editor.edit(7)
+    assert result.state == "ready" and Path(result.path).is_file()
+    assert any("self-check couldn't run" in n for n in result.notes)
 
 
 def test_no_edits_once_the_week_is_spent(tmp_path):

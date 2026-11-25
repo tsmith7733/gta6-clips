@@ -72,12 +72,23 @@ lead-up that the payoff makes sense. Empty list = keep the whole clip. Viewers s
 - zooms: punch-ins. target "cam" (the streamer's face/avatar box, for his reaction: yelling, laughing, \
 shock), "game" (the middle of the game), or "box" with a box [x, y, w, h] as fractions of the frame \
 (something specific you saw in a frame). scale 1.2-2.2 (cam reactions look best around 1.8-2.2, game \
-1.2-1.5). shake: true only for a big impact or a scream. Zooms may not overlap. Keep each zoom short \
-(0.8-3 s): punch in on the beat, then back out.
+1.2-1.5). shake: true only for a big impact or a scream. Zooms may not overlap. style: "punch" cuts \
+straight in on the beat (a yell, an impact; keep it 0.8-3 s), "smooth" eases in and back out (a \
+reaction or a funny line you want to sit on, 1.5-4 s), "push" is a slow push-in over the whole range \
+that builds tension before a payoff (2-5 s, ending on the moment; it cuts back out after).
+- speeds: parts played slower (0.3-0.8: the impact itself, without stopping the clip like a replay \
+does) or faster (1.25-4: fly through dull driving or setup instead of cutting it, so the run still \
+makes sense). ramp: true eases into and out of the speed (the classic speed ramp: normal, slow-mo on \
+the hit, back to normal). The sound changes speed too, so don't put one over his words. One or two per \
+clip at most; speeds may not overlap.
+- transitions: on a cut between two kept ranges ("at" = the end of a kept range that isn't the last): \
+"whip" (a fast blurred slide, for jumping to another place or later moment) or "zoom" (punches through \
+with blur, for jumping to something more intense). Use on 1-3 cuts that jump in time or place; a plain \
+cut is better inside one scene, and not every cut needs one.
 - replays: a slow-motion "run it back" of the best moment (1-4 s of it, speed 0.4-0.6), inserted right \
 after it (`after`, default its end). At most one or two per clip, only for something worth seeing twice.
 - freezes: a frame held 0.4-1 s with a short label ("BRUH", "WAIT FOR IT"), on the exact moment before \
-or of the payoff. Use sparingly: at most one.
+or of the payoff (push: true adds a slow push-in while it's frozen). Use sparingly: at most one.
 - texts: short captions that add something: a label for what's happening, a punchline, a count \
 ("FAIL #2"). Not a transcript. 1-5 words, position "top" (over the game, under the webcam), \
 "middle" or "bottom"; size s, m or l. Don't cover the streamer's face box. Each shows 1-3 s.
@@ -113,26 +124,37 @@ empty game or half a face?
 - is every text readable, not cut off at the edges, and not covering his face or the action?
 - does the hook make sense on its first frame?
 - anything that looks broken (black frames, a wrong crop, text over text)?
+Transitions are blurred on purpose, and a smooth or push zoom may be mid-way in a frame.
 You can't hear the edit, so keep its sounds and music as they are unless a fix moves the moment they \
 belong to (then move them with it).
 Answer ok=true if it's good enough to show the owner. Otherwise list the problems and give a fixed \
 plan (the whole plan, same moves and rules as before). Only change what's wrong.
 """
 
-def check_schema(plan: dict) -> dict:
-    return {
-        "type": "object",
-        "properties": {
-            "ok": {"type": "boolean"},
-            "problems": {"type": "array", "items": {"type": "string"}},
-            "fixed_plan": plan,
-        },
-        "required": ["ok", "problems", "fixed_plan"],
-        "additionalProperties": False,
-    }
+# The fixed plan comes back as JSON text, not as a nested schema: the plan schema inside another one
+# made the API refuse the check ("compiled grammar is too large", 2026-11-25, with the motion moves).
+# parse_plan checks it all the same, and an unusable fix keeps the first render.
+CHECK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ok": {"type": "boolean"},
+        "problems": {"type": "array", "items": {"type": "string"}},
+        "fixed_plan_json": {"type": "string"},
+    },
+    "required": ["ok", "problems", "fixed_plan_json"],
+    "additionalProperties": False,
+}
 
 
-CHECK_SCHEMA = check_schema(plan_schema())
+def fixed_plan(answer: dict) -> dict | None:
+    """The self-check's fixed plan, or None (no fix, or text that isn't a JSON object)."""
+    if isinstance(answer.get("fixed_plan"), dict):          # older answers, and the tests' fakes
+        return answer["fixed_plan"]
+    try:
+        data = json.loads(answer.get("fixed_plan_json") or "null")
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 class EditorError(Exception):
@@ -260,7 +282,9 @@ class ClaudePlanWriter:
                                 f"{json.dumps(plan)}\n\nFrames of the edited video:"}]
         for t, what, jpeg in frames:
             content += [{"type": "text", "text": f"At {t:.1f} s of the edit (should show: {what}):"}, _image(jpeg)]
-        return self._ask(CHECK_PROMPT, content, check_schema(brief.schema()))
+        content.append({"type": "text", "text": "If it needs fixing, fixed_plan_json is the whole fixed plan as "
+                        "JSON, with the same fields as your plan above; otherwise an empty string."})
+        return self._ask(CHECK_PROMPT, content, CHECK_SCHEMA)
 
 
 def frames_at(ffmpeg: Path, media: Path, times: list[float], width: int = FRAME_WIDTH) -> list[tuple[float, bytes]]:
@@ -281,7 +305,11 @@ def check_points(plan: EditPlan, duration_s: float, cam_box=None, limit: int = 1
     if plan.hook:
         points.append((min(0.5, plan.hook.seconds / 2), f"the hook text '{plan.hook.text}'"))
     for z in plan.zooms:
-        points.append((out_time(shots, (z.start + z.end) / 2), f"a {z.scale:.1f}x punch-in on the {z.target}"))
+        if z.style == "push":   # look where it ends up
+            points.append((out_time(shots, z.end - 0.1), f"the end of a slow push-in ({z.scale:.1f}x) on the {z.target}"))
+        else:
+            kind = "punch-in" if z.style == "punch" else "smooth zoom"
+            points.append((out_time(shots, (z.start + z.end) / 2), f"a {z.scale:.1f}x {kind} on the {z.target}"))
     for t in plan.texts:
         points.append((out_time(shots, (t.start + t.end) / 2), f"the text '{t.text}' at the {t.position}"))
     clock = 0.0
@@ -476,20 +504,30 @@ class Editor:
                 points = check_points(plan, brief.duration_s, brief.cam_box)
                 shots = frames_at(self.ffmpeg, dest, [t for t, _ in points])
                 frames = [(t, what, jpeg) for (t, what), (_, jpeg) in zip(points, shots)]
-                answer = self.writer.check(brief, data, frames)
-                cost += self._paid(answer, "edit check", clip_id)
-                problems = [str(p) for p in answer.data.get("problems") or []]
-                if not answer.data.get("ok") and answer.data.get("fixed_plan"):
-                    try:
-                        fixed = parse_plan(answer.data["fixed_plan"], brief.duration_s, self.sounds)
-                        render(self.ffmpeg, source, fixed, dest, duration_s=brief.duration_s, cam_box=brief.cam_box,
-                               sounds=self.sounds)
-                        data, plan = answer.data["fixed_plan"], fixed
-                        notes = list(fixed.notes) + [f"Self-check of the render: {p}" for p in problems]
-                    except (PlanError, RenderError) as exc:
-                        notes.append(f"The self-check wanted a fix that didn't work ({exc}); this is the first version.")
-                elif problems:
-                    notes += [f"Self-check: {p}" for p in problems]
+                try:
+                    answer = self.writer.check(brief, data, frames)
+                except EditorError as exc:      # the first render stands
+                    answer = None
+                    notes.append(f"The self-check couldn't run ({exc}); this is the first version, unchecked.")
+                if answer is not None:
+                    cost += self._paid(answer, "edit check", clip_id)
+                    problems = [str(p) for p in answer.data.get("problems") or []]
+                    fix = fixed_plan(answer.data) if not answer.data.get("ok") else None
+                    if fix:
+                        trial = dest.with_name(dest.stem + "_fix.mp4")
+                        try:
+                            fixed = parse_plan(fix, brief.duration_s, self.sounds)
+                            render(self.ffmpeg, source, fixed, trial, duration_s=brief.duration_s,
+                                   cam_box=brief.cam_box, sounds=self.sounds)
+                            trial.replace(dest)
+                            data, plan = fix, fixed
+                            notes = list(fixed.notes) + [f"Self-check of the render: {p}" for p in problems]
+                        except (PlanError, RenderError) as exc:
+                            trial.unlink(missing_ok=True)
+                            notes.append(f"The self-check wanted a fix that didn't work ({exc}); this is the first "
+                                         "version.")
+                    elif problems:
+                        notes += [f"Self-check: {p}" for p in problems]
             notes += self._sound_notes(plan, brief)
             seconds = sum(s.seconds for s in build_shots(plan, brief.duration_s, brief.cam_box))
             dest.with_suffix(".plan.json").write_text(json.dumps(data, indent=2), encoding="utf-8")

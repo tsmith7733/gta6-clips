@@ -15,6 +15,9 @@ POSITIONS = ("top", "middle", "bottom")
 SIZES = ("s", "m", "l")
 MAX_OUTPUT_S = 90.0
 MAX_SOUNDS = 10
+ZOOM_STYLES = ("punch", "smooth", "push")   # cut straight in | ease in and out | slow push-in over the zoom
+TRANSITIONS = ("whip", "zoom")
+MAX_TRANSITIONS = 6
 
 
 class PlanError(ValueError):
@@ -29,6 +32,21 @@ class Zoom:
     scale: float = 1.8                      # 1.1-3.0
     box: tuple[float, float, float, float] | None = None   # target "box": x, y, w, h as fractions of the frame
     shake: bool = False
+    style: str = "punch"
+
+
+@dataclass(frozen=True)
+class Speed:
+    start: float
+    end: float
+    speed: float                            # 0.3-0.8 slow motion, 1.25-4 fast forward
+    ramp: bool = True                       # ease into and out of the speed instead of jumping
+
+
+@dataclass(frozen=True)
+class Transition:
+    at: float                               # a cut: the end of a kept range (source time)
+    kind: str = "whip"
 
 
 @dataclass(frozen=True)
@@ -50,6 +68,7 @@ class Freeze:
     seconds: float = 0.7                    # 0.2-1.5
     label: str = ""
     sound: str = ""
+    push: bool = False                      # a slow push-in while it's frozen
 
 
 @dataclass(frozen=True)
@@ -94,6 +113,8 @@ class EditPlan:
     notes: tuple[str, ...] = field(default=())     # why: one line per idea, shown on the review page
     sounds: tuple[Sound, ...] = ()
     music: Music | None = None
+    speeds: tuple[Speed, ...] = ()
+    transitions: tuple[Transition, ...] = ()
 
 
 def _num(d: dict, key: str, default=None) -> float:
@@ -164,7 +185,10 @@ def parse_plan(data: dict, duration_s: float, sounds=None) -> EditPlan:
         box = _box(z)
         if target == "box" and box is None:
             raise PlanError("a zoom on a box needs its box")
-        zooms.append(Zoom(a, b, target, scale, box, bool(z.get("shake", False))))
+        style = str(z.get("style") or "punch")
+        if style not in ZOOM_STYLES:
+            raise PlanError(f"zoom style must be one of {ZOOM_STYLES}")
+        zooms.append(Zoom(a, b, target, scale, box, bool(z.get("shake", False)), style))
     zooms.sort(key=lambda z: z.start)
     for x, y in zip(zooms, zooms[1:]):
         if y.start < x.end:
@@ -190,7 +214,7 @@ def parse_plan(data: dict, duration_s: float, sounds=None) -> EditPlan:
         if not 0 <= at < duration_s:
             raise PlanError(f"freeze at {at:.1f} s is outside the clip")
         freezes.append(Freeze(at, max(0.2, min(1.5, _num(f, "seconds", 0.7))), _clean_text(f.get("label", ""), 30),
-                              sfx(f.get("sound"))))
+                              sfx(f.get("sound")), bool(f.get("push", False))))
     texts = []
     for t in data.get("texts") or []:
         a, b = within(_num(t, "start"), _num(t, "end"), "text", 0.4)
@@ -228,8 +252,34 @@ def parse_plan(data: dict, duration_s: float, sounds=None) -> EditPlan:
         if start >= max(0.0, sounds.get(track).seconds - 10):
             start = 0.0                      # too near the track's end: from the top
         music = Music(track, max(0.03, min(0.35, _num(m, "volume", 0.12))), start)
+    speeds = []
+    for x in data.get("speeds") or []:
+        a, b = within(_num(x, "start"), _num(x, "end"), "speed section", 0.5)
+        speed = _num(x, "speed")
+        if not (0.3 <= speed <= 0.8 or 1.25 <= speed <= 4.0):
+            raise PlanError("a speed section is slow motion (0.3-0.8) or fast forward (1.25-4)")
+        speeds.append(Speed(a, b, speed, bool(x.get("ramp", True))))
+    speeds.sort(key=lambda s: s.start)
+    for x, y in zip(speeds, speeds[1:]):
+        if y.start < x.end:
+            raise PlanError(f"speed sections at {x.start:.1f} s and {y.start:.1f} s overlap")
+    cuts = [k[1] for k in keep[:-1]]
+    transitions = []
+    for x in data.get("transitions") or []:
+        at, kind = _num(x, "at"), str(x.get("kind") or "whip")
+        if kind not in TRANSITIONS:
+            raise PlanError(f"transition kind must be one of {TRANSITIONS}")
+        cut = min(cuts, key=lambda c: abs(c - at), default=None)
+        if cut is None or abs(cut - at) > 0.5:
+            raise PlanError(f"a transition goes on a cut (the end of a kept range that isn't the last); "
+                            f"{at:.1f} s isn't one" + (f" (cuts: {', '.join(f'{c:.1f}' for c in cuts)})" if cuts else ""))
+        if all(t.at != cut for t in transitions):
+            transitions.append(Transition(cut, kind))
+    if len(transitions) > MAX_TRANSITIONS:
+        raise PlanError(f"at most {MAX_TRANSITIONS} transitions")
     plan = EditPlan(tuple(keep), tuple(zooms), tuple(replays), tuple(freezes), tuple(texts), flashes, hook,
-                    tuple(str(n)[:200] for n in data.get("notes") or []), tuple(effects), music)
+                    tuple(str(n)[:200] for n in data.get("notes") or []), tuple(effects), music, tuple(speeds),
+                    tuple(sorted(transitions, key=lambda t: t.at)))
     return plan
 
 
@@ -241,15 +291,23 @@ _PLAN_SCHEMA = {
         "keep": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}},
         "zooms": {"type": "array", "items": {"type": "object", "properties": {
             "start": {"type": "number"}, "end": {"type": "number"}, "target": {"type": "string", "enum": list(TARGETS)},
-            "scale": {"type": "number"}, "box": _BOX, "shake": {"type": "boolean"}},
-            "required": ["start", "end", "target", "scale"], "additionalProperties": False}},
+            "scale": {"type": "number"}, "box": _BOX, "shake": {"type": "boolean"},
+            "style": {"type": "string", "enum": list(ZOOM_STYLES)}},
+            "required": ["start", "end", "target", "scale", "style"], "additionalProperties": False}},
+        "speeds": {"type": "array", "items": {"type": "object", "properties": {
+            "start": {"type": "number"}, "end": {"type": "number"}, "speed": {"type": "number"},
+            "ramp": {"type": "boolean"}}, "required": ["start", "end", "speed", "ramp"], "additionalProperties": False}},
+        "transitions": {"type": "array", "items": {"type": "object", "properties": {
+            "at": {"type": "number"}, "kind": {"type": "string", "enum": list(TRANSITIONS)}},
+            "required": ["at", "kind"], "additionalProperties": False}},
         "replays": {"type": "array", "items": {"type": "object", "properties": {
             "start": {"type": "number"}, "end": {"type": "number"}, "speed": {"type": "number"},
             "target": {"type": "string", "enum": list(TARGETS)}, "scale": {"type": "number"}, "box": _BOX,
             "label": {"type": "string"}, "after": {"type": "number"}},
             "required": ["start", "end", "speed", "target", "scale", "label"], "additionalProperties": False}},
         "freezes": {"type": "array", "items": {"type": "object", "properties": {
-            "at": {"type": "number"}, "seconds": {"type": "number"}, "label": {"type": "string"}},
+            "at": {"type": "number"}, "seconds": {"type": "number"}, "label": {"type": "string"},
+            "push": {"type": "boolean"}},
             "required": ["at", "seconds", "label"], "additionalProperties": False}},
         "texts": {"type": "array", "items": {"type": "object", "properties": {
             "start": {"type": "number"}, "end": {"type": "number"}, "text": {"type": "string"},
@@ -260,7 +318,7 @@ _PLAN_SCHEMA = {
                  "required": ["text", "seconds"], "additionalProperties": False},
         "notes": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["keep", "zooms", "replays", "freezes", "texts", "flashes", "notes"],
+    "required": ["keep", "zooms", "replays", "freezes", "texts", "flashes", "notes", "speeds", "transitions"],
     "additionalProperties": False,
 }
 

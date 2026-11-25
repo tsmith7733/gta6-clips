@@ -14,11 +14,11 @@ import math
 import shutil
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ..media import _popen_kwargs
-from .plan import EditPlan, Text
+from .plan import EditPlan, Speed, Text, Zoom
 
 log = logging.getLogger(__name__)
 
@@ -46,27 +46,65 @@ class Shot:
     shake: bool = False
     replay: bool = False
     label: str = ""
+    zoom: Zoom | None = None      # a smooth or push zoom this shot is part of (animated, not a fixed crop)
+    in_fx: str = ""               # a transition into this shot (whip | zoom)
+    out_fx: str = ""              # a transition out of it
+    push: bool = False            # a frozen frame with a slow push-in
+    center: tuple[float, float] = (0.5, 0.5)   # what a moving zoom closes in on (fractions of the frame)
+
+    @property
+    def moving(self) -> bool:
+        return bool(self.zoom or self.in_fx or self.out_fx or self.push)
+
+
+def _center(target: str, box, cam_box) -> tuple[float, float]:
+    if target == "box" and box:
+        return box[0] + box[2] / 2, box[1] + box[3] / 2
+    if target == "cam" and cam_box:
+        return cam_box[0] + cam_box[2] / 2, cam_box[1] + cam_box[3] / 2
+    return GAME_CENTER
 
 
 def crop_for(target: str, scale: float, box, cam_box) -> tuple[int, int, int, int]:
     """A 9:16 crop, 1/scale of the frame, centred on the target and kept inside the frame."""
     w = int(round(W / scale / 2)) * 2
     h = min(H, int(round(w * 16 / 9 / 2)) * 2)
-    if target == "box" and box:
-        cx, cy = box[0] + box[2] / 2, box[1] + box[3] / 2
-    elif target == "cam" and cam_box:
-        cx, cy = cam_box[0] + cam_box[2] / 2, cam_box[1] + cam_box[3] / 2
-    else:
-        cx, cy = GAME_CENTER
+    cx, cy = _center(target, box, cam_box)
     x = int(max(0, min(W - w, cx * W - w / 2)))
     y = int(max(0, min(H - h, cy * H - h / 2)))
     return w, h, x, y
 
 
+RAMP_S, RAMP_STEPS = 0.45, 3     # a speed ramp: the first and last 0.45 s of a section, in 3 steps each
+
+
+def _ramp_points(s: Speed) -> set[float]:
+    if not s.ramp:
+        return set()
+    step = min(RAMP_S, (s.end - s.start) / 3) / RAMP_STEPS
+    return {s.start + k * step for k in range(1, RAMP_STEPS + 1)} | {s.end - k * step for k in range(1, RAMP_STEPS + 1)}
+
+
+def speed_at(plan: EditPlan, t: float) -> float:
+    """The playback speed at source time t (inside a ramp: stepped from 1 toward the section's speed)."""
+    s = next((s for s in plan.speeds if s.start - EPS <= t < s.end - EPS), None)
+    if s is None:
+        return 1.0
+    if not s.ramp:
+        return s.speed
+    edge = min(RAMP_S, (s.end - s.start) / 3)
+    d = min(t - s.start, s.end - t)
+    if d >= edge - EPS:
+        return s.speed
+    frac = (int(d / edge * RAMP_STEPS) + 0.5) / RAMP_STEPS     # the middle of its step
+    return round(1.0 + (s.speed - 1.0) * frac * frac * (3 - 2 * frac), 3)
+
+
 def build_shots(plan: EditPlan, duration_s: float, cam_box=None) -> list[Shot]:
     keep = list(plan.keep) or [(0.0, duration_s)]
     cuts = {t for z in plan.zooms for t in (z.start, z.end)} | {f.at for f in plan.freezes} | \
-        {r.after for r in plan.replays}
+        {r.after for r in plan.replays} | {t for s in plan.speeds for t in (s.start, s.end)} | \
+        {t for s in plan.speeds for t in _ramp_points(s)}
     segments: list[tuple[float, float]] = []
     for a, b in keep:
         points = sorted({a, b} | {t for t in cuts if a + EPS < t < b - EPS})
@@ -74,6 +112,12 @@ def build_shots(plan: EditPlan, duration_s: float, cam_box=None) -> list[Shot]:
 
     def zoom_at(t: float):
         return next((z for z in plan.zooms if z.start - EPS <= t < z.end - EPS), None)
+
+    def crop(z):
+        return crop_for(z.target, z.scale, z.box, cam_box) if z and z.style == "punch" else None
+
+    def moving(z):
+        return z if z and z.style != "punch" else None
 
     # Each replay goes right after the last kept piece that ends by its `after` (or after the first piece).
     replay_after: dict[int, list] = {}
@@ -87,14 +131,23 @@ def build_shots(plan: EditPlan, duration_s: float, cam_box=None) -> list[Shot]:
             if abs(f.at - a) <= EPS:
                 z = zoom_at(a)
                 shots.append(Shot("freeze", a, a, f.seconds, crop=crop_for(z.target, z.scale, z.box, cam_box) if z else None,
-                                  label=f.label))
+                                  label=f.label, push=f.push))
         z = zoom_at(a)
-        shots.append(Shot("play", a, b, b - a, crop=crop_for(z.target, z.scale, z.box, cam_box) if z else None,
-                          shake=bool(z and z.shake)))
+        speed = speed_at(plan, (a + b) / 2)
+        shots.append(Shot("play", a, b, (b - a) / speed, speed=speed, crop=crop(z), shake=bool(z and z.shake),
+                          zoom=moving(z), center=_center(z.target, z.box, cam_box) if moving(z) else (0.5, 0.5)))
         for r in replay_after.get(i, []):
             shots.append(Shot("play", r.start, r.end, (r.end - r.start) / r.speed, speed=r.speed,
                               crop=crop_for(r.target, r.scale, r.box, cam_box) if r.scale > 1.0 else None,
                               replay=True, label=r.label))
+    # Transitions: out of the piece that ends at the cut, into whatever comes next.
+    for t in plan.transitions:
+        i = next((i for i, s in enumerate(shots) if s.kind == "play" and not s.replay and abs(s.b - t.at) <= EPS), None)
+        if i is None or i + 1 >= len(shots):
+            continue
+        shots[i] = replace(shots[i], out_fx=t.kind)
+        if shots[i + 1].kind == "play":
+            shots[i + 1] = replace(shots[i + 1], in_fx=t.kind)
     return shots
 
 
@@ -104,7 +157,7 @@ def out_time(shots: list[Shot], t: float) -> float:
     best = None
     for s in shots:
         if s.kind == "play" and not s.replay and s.a - EPS <= t < s.b:
-            return clock + (t - s.a)
+            return clock + (t - s.a) / s.speed
         if best is None and s.kind == "play" and not s.replay and s.a >= t:
             best = clock
         clock += s.seconds
@@ -116,8 +169,70 @@ def _atempo(speed: float) -> str:
     while s < 0.5:
         parts.append("atempo=0.5")
         s /= 0.5
+    while s > 2.0:
+        parts.append("atempo=2.0")
+        s /= 2.0
     parts.append(f"atempo={s:.4f}")
     return ",".join(parts)
+
+
+# -- motion: smooth and push zooms, whip and zoom transitions, a push on a freeze ---------------
+TRANSITION_S = 0.18
+UPSCALE = 2          # zoompan moves in whole input pixels: on a 2x frame that's half an output pixel
+
+
+def _clip01(e: str) -> str:
+    return f"max(0\\,min(1\\,{e}))"
+
+
+def _ease(u: str) -> str:
+    return f"(({u})*({u})*(3-2*({u})))"
+
+
+def motion_filter(s: Shot) -> str:
+    """A zoompan filter for a moving shot: zoom and centre as expressions of the shot's frame number."""
+    T = f"(on/{FPS})"
+    D = f"{s.seconds:.4f}"
+    if s.kind == "freeze":
+        z = f"(1+0.12*{_ease(_clip01(f'{T}/{D}'))})"
+        cx, cy = 0.5, 0.45
+    elif s.zoom is not None:
+        zm = s.zoom
+        cx, cy = s.center
+        src = f"({s.a:.4f}+{T}*{s.speed:.4f})"                         # where in the clip this frame is
+        if zm.style == "push":
+            u = _clip01(f"({src}-{zm.start:.4f})/{zm.end - zm.start:.4f}")
+        else:   # smooth: ease in over the zoom's first moments and back out over its last
+            edge = min(0.35, (zm.end - zm.start) / 3)
+            u = _clip01(f"min(({src}-{zm.start:.4f})\\,({zm.end:.4f}-{src}))/{edge:.4f}")
+        z = f"(1+{zm.scale - 1:.4f}*{_ease(u)})"
+    else:
+        z, (cx, cy) = "1", (0.5, 0.5)
+    out_u = _clip01(f"({T}-({D}-{TRANSITION_S}))/{TRANSITION_S}") if s.out_fx else "0"
+    in_u = _clip01(f"1-{T}/{TRANSITION_S}") if s.in_fx else "0"
+    for fx, u in ((s.out_fx, out_u), (s.in_fx, in_u)):
+        if fx == "zoom":
+            z = f"{z}*(1+0.9*({u})*({u}))"                               # punches through and lands
+        elif fx == "whip":
+            z = f"{z}*(1+0.3*{u})"                                       # room for the pan
+    # whip: the picture flies off to the left and the next one comes in from the right
+    terms = ([f"+0.5*{out_u}"] if s.out_fx == "whip" else []) + ([f"-0.5*{in_u}"] if s.in_fx == "whip" else [])
+    pan = f"(0{''.join(terms)})"
+    shake = f"+0.012*iw/zoom*sin(2*PI*{T}*11)" if s.shake else ""
+    shake_y = f"+0.012*ih/zoom*cos(2*PI*{T}*13)" if s.shake else ""
+    x = f"max(0\\,min(iw-iw/zoom\\,{cx:.4f}*iw-iw/zoom/2+{pan}*(iw-iw/zoom){shake}))"
+    y = f"max(0\\,min(ih-ih/zoom\\,{cy:.4f}*ih-ih/zoom/2{shake_y}))"
+    blur = []
+    if s.out_fx:
+        blur.append(f"{_blur(s.out_fx)}:enable='gte(t\\,{s.seconds - TRANSITION_S:.4f})'")
+    if s.in_fx:
+        blur.append(f"{_blur(s.in_fx)}:enable='lt(t\\,{TRANSITION_S})'")
+    return (f"scale={W * UPSCALE}:{H * UPSCALE},zoompan=z='max(1\\,{z})':x='{x}':y='{y}':d=1:s={W}x{H}:fps={FPS}"
+            + "".join("," + b for b in blur))
+
+
+def _blur(kind: str) -> str:
+    return "dblur=angle=0:radius=40" if kind == "whip" else "gblur=sigma=8"
 
 
 def _wrap(text: str, width: int) -> str:
@@ -229,9 +344,10 @@ def build_graph(plan: EditPlan, shots: list[Shot], workdir: Path, sounds=None,
              f"[0:a]asplit={len(plays)}" + "".join(f"[a{i}]" for i in plays)]
     for i, s in enumerate(shots):
         crop = ""
-        if s.crop or s.shake:
+        motion = f"{motion_filter(s)}," if s.moving else ""     # shake then lives in the zoompan
+        if s.crop or (s.shake and not s.moving):
             w, h, x, y = s.crop or crop_for("game", 1.08, None, None)
-            if s.shake:
+            if s.shake and not s.moving:
                 amp = max(4, min(18, x, W - w - x, y, H - h - y))
                 xs = f"max(0\\,min({W - w}\\,{x}+{amp}*sin(2*PI*t*11)))"
                 ys = f"max(0\\,min({H - h}\\,{y}+{amp}*cos(2*PI*t*13)))"
@@ -242,12 +358,13 @@ def build_graph(plan: EditPlan, shots: list[Shot], workdir: Path, sounds=None,
             frames = max(1, round(s.seconds * FPS))
             lines.append(f"[v{i}]trim=start={s.a:.3f}:end={s.a + 0.1:.3f},setpts=PTS-STARTPTS,{crop}"
                          f"loop=loop={frames}:size=1:start=0,trim=end_frame={frames},setpts=N/{FPS}/TB,"
-                         f"setsar=1,fps={FPS},format=yuv420p[sv{i}]")
+                         f"fps={FPS},{motion}setsar=1,format=yuv420p[sv{i}]")
             lines.append(f"aevalsrc=0|0:s=48000:d={s.seconds:.3f},aformat=channel_layouts=stereo[sa{i}]")
         else:
             speed = f",setpts=PTS/{s.speed:.4f}" if s.speed != 1.0 else ""
+            # fps before the zoompan: it makes one frame per frame in, so slow motion needs its frames first
             lines.append(f"[v{i}]trim=start={s.a:.3f}:end={s.b:.3f},setpts=PTS-STARTPTS{speed},{crop}"
-                         f"setsar=1,fps={FPS},format=yuv420p[sv{i}]")
+                         f"fps={FPS},{motion}setsar=1,format=yuv420p[sv{i}]")
             tempo = f",{_atempo(s.speed)}" if s.speed != 1.0 else ""
             lines.append(f"[a{i}]atrim=start={s.a:.3f}:end={s.b:.3f},asetpts=PTS-STARTPTS{tempo},"
                          f"aresample=48000,aformat=channel_layouts=stereo[sa{i}]")
