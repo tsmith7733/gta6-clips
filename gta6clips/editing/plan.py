@@ -21,6 +21,15 @@ MAX_TRANSITIONS = 6
 EFFECTS = ("glitch", "rgb_split", "bw", "vignette", "pop")
 GRADES = ("none", "punchy", "warm", "cool", "cinematic")
 MAX_EFFECTS = 8
+STICKER_KINDS = ("emoji", "arrow", "circle")
+# The emoji a sticker may be, by name (drawn from the system's colour emoji font).
+EMOJI = {"laugh": "😂", "rofl": "🤣", "skull": "💀", "cry": "😭",
+         "fire": "🔥", "shock": "😳", "scream": "😱", "eyes": "👀",
+         "clown": "🤡", "boom": "💥", "siren": "🚨", "hundred": "💯",
+         "thinking": "🤔", "facepalm": "🤦", "sweat": "😅", "nerd": "🤓",
+         "goat": "🐐", "money": "💸", "cop": "👮", "car": "🚗",
+         "question": "❓", "bangbang": "‼️", "cap": "🧢", "pray": "🙏"}
+MAX_STICKERS = 6
 
 
 class PlanError(ValueError):
@@ -94,6 +103,17 @@ class Text:
 
 
 @dataclass(frozen=True)
+class Sticker:
+    start: float                            # source time
+    end: float
+    kind: str                               # one of STICKER_KINDS
+    x: float                                # the point, as fractions of the (unzoomed) frame: an emoji's
+    y: float                                # centre, an arrow's tip, a circle's centre
+    size: str = "m"
+    emoji: str = ""                         # a name from EMOJI (emoji stickers)
+
+
+@dataclass(frozen=True)
 class Sound:
     at: float                               # source time
     sound: str                              # a sound effect id from the library
@@ -129,6 +149,7 @@ class EditPlan:
     transitions: tuple[Transition, ...] = ()
     effects: tuple[Effect, ...] = ()
     grade: str = "none"                     # the whole edit's colour: one of GRADES
+    stickers: tuple[Sticker, ...] = ()
 
 
 def _num(d: dict, key: str, default=None) -> float:
@@ -310,10 +331,32 @@ def parse_plan(data: dict, duration_s: float, sounds=None) -> EditPlan:
     grade = str(data.get("grade") or "none")
     if grade not in GRADES:
         raise PlanError(f"grade must be one of {GRADES}")
+    stickers = []
+    for x in data.get("stickers") or []:
+        a, b = within(_num(x, "start"), _num(x, "end"), "sticker", 0.4)
+        kind, size, name = str(x.get("kind") or ""), str(x.get("size") or "m"), str(x.get("emoji") or "").strip()
+        if kind not in STICKER_KINDS:
+            raise PlanError(f"sticker kind must be one of {STICKER_KINDS}")
+        if size not in SIZES:
+            raise PlanError(f"sticker size must be one of {SIZES}")
+        if kind == "emoji" and name not in EMOJI:
+            raise PlanError(f"an emoji sticker names one of {', '.join(EMOJI)}, not {name!r}")
+        px, py = _num(x, "x", -1), _num(x, "y", -1)
+        if not (0 <= px <= 1 and 0 <= py <= 1):
+            raise PlanError("a sticker's x and y are fractions of the frame (0-1)")
+        for z in zooms:
+            if z.style != "punch" and a < z.end and z.start < b:
+                raise PlanError(f"the sticker at {a:.1f} s overlaps a {z.style} zoom ({z.start:.1f}-{z.end:.1f} s), "
+                                "which moves the picture under it; use a punch zoom or move the sticker")
+        if any(f.push and a <= f.at < b for f in freezes):
+            raise PlanError(f"the sticker at {a:.1f} s covers a freeze with a push, which moves the picture under it")
+        stickers.append(Sticker(a, b, kind, px, py, size, name if kind == "emoji" else ""))
+    if len(stickers) > MAX_STICKERS:
+        raise PlanError(f"at most {MAX_STICKERS} stickers")
     plan = EditPlan(tuple(keep), tuple(zooms), tuple(replays), tuple(freezes), tuple(texts), flashes, hook,
                     tuple(str(n)[:200] for n in data.get("notes") or []), tuple(effects), music, tuple(speeds),
                     tuple(sorted(transitions, key=lambda t: t.at)), tuple(sorted(looks, key=lambda e: e.start)),
-                    grade)
+                    grade, tuple(sorted(stickers, key=lambda s: s.start)))
     return plan
 
 
@@ -355,6 +398,8 @@ def plan_schema(sfx_ids=(), music_ids=()) -> dict:
         "freezes": _arr(_obj(at=_NUM, seconds=_NUM, label=_STR, push=_BOOL, effect=effect, **sounded)),
         "effects": _arr(_obj(start=_NUM, end=_NUM, kind=_enum(EFFECTS))),
         "grade": _enum(GRADES),
+        "stickers": _arr(_obj(start=_NUM, end=_NUM, kind=_enum(STICKER_KINDS), emoji=_enum(("", *EMOJI)),
+                              x=_NUM, y=_NUM, size=_enum(SIZES))),
         "texts": _arr(_obj(start=_NUM, end=_NUM, text=_STR, position=_enum(POSITIONS), size=_enum(SIZES),
                            **sounded)),
         "flashes": _arr(_NUM),

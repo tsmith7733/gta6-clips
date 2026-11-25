@@ -23,7 +23,7 @@ from typing import Callable, Protocol
 from ..media import _popen_kwargs
 from .moments import LoudMoment, measure_moments
 from .plan import EditPlan, PlanError, parse_plan, plan_schema
-from .render import RenderError, build_shots, effect_ranges, out_time, render, sound_events
+from .render import RenderError, build_shots, effect_ranges, out_time, render, sound_events, sticker_runs
 from .sounds import SoundLibrary
 
 log = logging.getLogger(__name__)
@@ -98,6 +98,7 @@ seasoning, and a glitch over talking just looks broken.
 - grade: the whole edit's colour. "punchy" (a bit more contrast and colour) suits most action clips; \
 "warm", "cool" or "cinematic" (muted, contrasty, dark edges) when they fit the mood; "none" keeps the \
 game's own look. Don't stack "cinematic" with a vignette effect.
+- stickers: drawn over the picture for 0.8-3 s, each with a point x, y as fractions of the frame (as you see it in the frames you were given, before any zoom; punch-ins are accounted for): kind "emoji" (centred on the point; emoji is one of the names in the schema: laugh, skull, cry, fire, shock, eyes, clown, boom, siren...) for a reaction beat, "arrow" (its tip touches the point, coming from the middle of the frame) to point at the thing that's about to matter (the cop car, the ramp, the guy he's about to hit), "circle" (around the point) to circle that thing. size s, m, l. Never over his face box or a text, and not during a smooth or push zoom or a pushed freeze (the picture moves under them; a punch zoom is fine). 0-3 per clip: an arrow or circle on the setup ("look at this") and an emoji on the reaction is the classic. A sticker only works if its point is exactly on the thing, so only use one where you can see where it is in a frame near that time.
 - texts: short captions that add something: a label for what's happening, a punchline, a count \
 ("FAIL #2"). Not a transcript. 1-5 words, position "top" (over the game, under the webcam), \
 "middle" or "bottom"; size s, m or l. Don't cover the streamer's face box. Each shows 1-3 s.
@@ -133,6 +134,7 @@ empty game or half a face?
 - is every text readable, not cut off at the edges, and not covering his face or the action?
 - does the hook make sense on its first frame?
 - anything that looks broken (black frames, a wrong crop, text over text)?
+- is every sticker on its thing: an arrow's tip on what it points at, a circle around it, an emoji not covering his face, the action or a text? Move its x, y in the fix if not (stickers pop in, so one may still be small in a frame right at its start).
 Transitions are blurred on purpose, and a smooth or push zoom may be mid-way in a frame. Glitch, \
 colour-split, black-and-white and grain are effects you chose, not damage; judge only whether they \
 land where they should and don't hide the action.
@@ -352,6 +354,10 @@ def check_points(plan: EditPlan, duration_s: float, cam_box=None, limit: int = 1
         points.append((out_time(shots, (t.start + t.end) / 2), f"the text '{t.text}' at the {t.position}"))
     for a, b, kind in effect_ranges(plan, shots):
         points.append(((a + b) / 2, f"the {kind.replace('_', ' ')} effect"))
+    for run in sticker_runs(plan, shots):
+        st = run.sticker
+        what = f"the {st.emoji} emoji sticker" if st.kind == "emoji" else f"the {st.kind} sticker"
+        points.append((min(run.start + 0.6, (run.start + run.end) / 2), f"{what} at x={st.x:.2f}, y={st.y:.2f}"))
     clock = 0.0
     for s in shots:
         if s.replay or s.kind == "freeze":

@@ -3,8 +3,9 @@
 The clip is cut into shots: pieces of the kept ranges (split where a zoom starts or ends), frozen
 frames, and slow-motion replays inserted after their moment. Each shot gets its own crop (the
 punch-in), then they're joined and the text, hook and flashes are drawn on the joined video, at the
-output times the source times map to. Texts are drawn with Impact, white with a black border, the
-usual clipper look.
+output times the source times map to. Texts are drawn with Montserrat Black (fonts/, OFL), white with a
+black border and a soft shadow, sized down to fit the frame. Stickers (stickers.py) are drawn by Pillow
+as frame runs and overlaid at their points, mapped through any punch-in crop.
 """
 
 from __future__ import annotations
@@ -18,15 +19,18 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ..media import _popen_kwargs
-from .plan import EditPlan, Speed, Text, Zoom
+from .plan import EditPlan, Speed, Sticker, Text, Zoom
 
 log = logging.getLogger(__name__)
 
 W, H, FPS = 1080, 1920, 30
-FONT_CANDIDATES = (Path(r"C:\Windows\Fonts\impact.ttf"), Path("/usr/share/fonts/truetype/msttcorefonts/Impact.ttf"),
-                   Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
-FONT_SIZES = {"s": 64, "m": 88, "l": 118}
-WRAP = {"s": 24, "m": 18, "l": 14}
+FONT_CANDIDATES = (Path(__file__).resolve().parents[2] / "fonts" / "Montserrat-Black.ttf",
+                   Path(r"C:\Windows\Fonts\impact.ttf"), Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"))
+# Montserrat Black is ~45% wider than Impact was: these keep a line under ~850 px, and _fit_size
+# shrinks a text whose longest line still wouldn't fit TEXT_MAX_W.
+FONT_SIZES = {"s": 58, "m": 80, "l": 104}
+WRAP = {"s": 22, "m": 16, "l": 12}
+TEXT_MAX_W = 960
 GAME_CENTER = (0.5, 0.62)
 EPS = 0.02
 
@@ -281,15 +285,88 @@ def _blur(kind: str) -> str:
 
 
 def _wrap(text: str, width: int) -> str:
-    lines, line = [], ""
-    for word in text.upper().split():
-        if line and len(line) + 1 + len(word) > width:
-            lines.append(line)
-            line = word
+    """At most 3 lines: a text that needs more is wrapped wider (and _fit_size shrinks it to fit),
+    never cut short."""
+    while True:
+        lines, line = [], ""
+        for word in text.upper().split():
+            if line and len(line) + 1 + len(word) > width:
+                lines.append(line)
+                line = word
+            else:
+                line = f"{line} {word}".strip()
+        lines.append(line)
+        if len(lines) <= 3 or width > 80:
+            return "\n".join(lines[:3])
+        width += 2
+
+
+def _fit_size(text: str, size: int) -> int:
+    """The font size that keeps the longest line of `text` within TEXT_MAX_W (measured with Pillow)."""
+    try:
+        from PIL import ImageFont
+
+        font = ImageFont.truetype(str(find_font()), size)
+    except (ImportError, OSError, RenderError):
+        return size
+    lines = text.split("\n")
+    while size > 24 and max((font.getlength(line) for line in lines), default=0) > TEXT_MAX_W:
+        size -= 2
+        font = ImageFont.truetype(str(find_font()), size)
+    return size
+
+
+def _drawtext(name: str, size: int, y: str, a: float, b: float) -> str:
+    border, shadow = max(5, round(size * 0.08)), max(3, round(size * 0.06))
+    return (f"drawtext=fontfile=font.ttf:textfile={name}:fontsize={size}:fontcolor=white:borderw={border}:"
+            f"bordercolor=black:shadowx=0:shadowy={shadow}:shadowcolor=black@0.5:text_align=C:"
+            f"line_spacing={round(size * 0.08)}:x=(w-text_w)/2:y={y}:enable='between(t\\,{a:.3f}\\,{b:.3f})'")
+
+
+@dataclass(frozen=True)
+class StickerRun:
+    sticker: Sticker
+    start: float                       # output time of its first frame
+    end: float
+    pieces: tuple[tuple[float, float, float, float], ...]   # (out start, out end, x, y in output pixels)
+
+
+def _to_output(s: Shot, px: float, py: float) -> tuple[float, float]:
+    """A point of the source frame (fractions) in the shot's output frame (pixels), through its crop."""
+    crop = s.crop or (crop_for("game", 1.08, None, None) if s.shake else None)
+    if not crop:
+        return px * W, py * H
+    w, h, x, y = crop
+    return (px * W - x) * W / w, (py * H - y) * H / h
+
+
+def sticker_runs(plan: EditPlan, shots: list[Shot]) -> list[StickerRun]:
+    """Where each sticker shows in the edit: the pieces of it in each shot (not in replays or moving
+    shots, whose picture moves under it), at its point mapped through that shot's crop."""
+    runs = []
+    for st in plan.stickers:
+        pieces, clock = [], 0.0
+        for s in shots:
+            span = None
+            if s.kind == "freeze" and st.start - EPS <= s.a < st.end:
+                span = (clock, clock + s.seconds)
+            elif s.kind == "play" and not s.replay and st.start < s.b and s.a < st.end:
+                a, b = max(st.start, s.a), min(st.end, s.b)
+                span = (clock + (a - s.a) / s.speed, clock + (b - s.a) / s.speed)
+            if span and span[1] - span[0] > EPS and not (s.zoom or s.push):
+                x, y = _to_output(s, st.x, st.y)
+                if -20 <= x <= W + 20 and -20 <= y <= H + 20:
+                    last = pieces[-1] if pieces else None
+                    if last and abs(last[1] - span[0]) < EPS and abs(last[2] - x) < 1 and abs(last[3] - y) < 1:
+                        pieces[-1] = (last[0], span[1], x, y)
+                    else:
+                        pieces.append((span[0], span[1], x, y))
+            clock += s.seconds
+        if pieces:
+            runs.append(StickerRun(st, pieces[0][0], pieces[-1][1], tuple(pieces)))
         else:
-            line = f"{line} {word}".strip()
-    lines.append(line)
-    return "\n".join(lines[:3])
+            log.warning("The sticker at %.1f s doesn't show anywhere in the edit", st.start)
+    return runs
 
 
 def _text_y(position: str) -> str:
@@ -431,23 +508,41 @@ def build_graph(plan: EditPlan, shots: list[Shot], workdir: Path, sounds=None,
     if plan.hook:
         overlays.append((0.0, plan.hook.seconds, Text(0, 0, plan.hook.text, "top", "l")))
     chain, files = [], []
-    # Colour first, then the effects, so text and labels drawn after stay clean and readable.
+    # Colour first, then the effects, then the stickers, so text and labels drawn last stay clean.
     if GRADE_FILTERS.get(plan.grade):
         chain.append(GRADE_FILTERS[plan.grade])
     for a, b, kind in effect_ranges(plan, shots):
         chain += effect_filters(kind, a, b)
+    runs = sticker_runs(plan, shots)
+    label = "cv"
+    if runs:
+        from .stickers import arrow_direction, write_frames
+
+        lines.append("[cv]" + (",".join(chain) if chain else "null") + "[sk0]")
+        chain, label, k = [], "sk0", 0
+        first = 1 + len(audio_inputs(plan, shots, sounds))
+        for n, run in enumerate(runs):
+            _, _, x0, y0 = run.pieces[0]
+            frames = write_frames(run.sticker, run.end - run.start, workdir, f"stk{n}", arrow_direction(x0, y0, W, H))
+            m = len(run.pieces)
+            lines.append(f"[{first + n}:v]format=rgba,setpts=PTS-STARTPTS+{run.start:.3f}/TB"
+                         + (f",split={m}" if m > 1 else "") + "".join(f"[sp{n}_{j}]" for j in range(m)))
+            for j, (a, b, x, y) in enumerate(run.pieces):
+                k += 1
+                lines.append(f"[{label}][sp{n}_{j}]overlay=x={round(x - frames.size / 2)}:y={round(y - frames.size / 2)}:"
+                             f"eof_action=pass:enable='between(t\\,{a:.3f}\\,{b:.3f})'[sk{k}]")
+                label = f"sk{k}"
     for n, (a, b, t) in enumerate(overlays):
         name = f"t{n}.txt"
+        text = _wrap(t.text, WRAP[t.size])
         # newline="\n": on Windows text mode writes \r\n, and drawtext draws the \r as a blank line.
-        (workdir / name).write_text(_wrap(t.text, WRAP[t.size]), encoding="utf-8", newline="\n")
+        (workdir / name).write_text(text, encoding="utf-8", newline="\n")
         files.append(name)
-        chain.append(f"drawtext=fontfile=font.ttf:textfile={name}:fontsize={FONT_SIZES[t.size]}:fontcolor=white:"
-                     f"borderw=7:bordercolor=black:text_align=C:line_spacing=6:x=(w-text_w)/2:y={_text_y(t.position)}:"
-                     f"enable='between(t\\,{a:.3f}\\,{b:.3f})'")
+        chain.append(_drawtext(name, _fit_size(text, FONT_SIZES[t.size]), _text_y(t.position), a, b))
     for f in plan.flashes:
         o = out_time(shots, f)
         chain.append(f"drawbox=x=0:y=0:w=iw:h=ih:color=white@0.55:t=fill:enable='between(t\\,{o:.3f}\\,{o + 0.1:.3f})'")
-    lines.append("[cv]" + (",".join(chain) if chain else "null") + "[vout]")
+    lines.append(f"[{label}]" + (",".join(chain) if chain else "null") + "[vout]")
     return ";\n".join(lines), files
 
 
@@ -455,7 +550,7 @@ def find_font() -> Path:
     for f in FONT_CANDIDATES:
         if f.is_file():
             return f
-    raise RenderError("No bold font found for the text (Impact on Windows)")
+    raise RenderError("No bold font found for the text (fonts/Montserrat-Black.ttf)")
 
 
 def render(ffmpeg: Path, source: Path, plan: EditPlan, dest: Path, *, duration_s: float, cam_box=None,
@@ -483,6 +578,8 @@ def render(ffmpeg: Path, source: Path, plan: EditPlan, dest: Path, *, duration_s
         extra: list[str] = []
         for path, loop in inputs:
             extra += (["-stream_loop", "-1"] if loop else []) + ["-i", str(Path(path).resolve())]
+        for n in range(len(sticker_runs(plan, shots))):      # their frames, written by build_graph
+            extra += ["-framerate", str(FPS), "-i", f"stk{n}/f%04d.png"]
         args = [str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error", "-i", str(source.resolve()), *extra,
                 "-/filter_complex", "graph.txt", "-map", "[vout]", "-map", "[aout]", "-c:v", "libx264",
                 "-preset", "veryfast", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
