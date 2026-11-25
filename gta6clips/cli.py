@@ -106,6 +106,7 @@ def _parser() -> argparse.ArgumentParser:
                                                 "publish.channels (a second channel, besides Clips Kitty's)")
     cy.add_argument("channel", help="its key in publish.channels, e.g. cutscene_skipped")
 
+    sub.add_parser("sounds", help="list the editor's sound effects and music (makes the starter effects if missing)")
     sub.add_parser("notify-test", help="send a test notification to Discord (DISCORD_WEBHOOK_URL in .env)")
 
     wait = sub.add_parser("wait", help="wait for a queued Clips Kitty job, then title and credit its clips")
@@ -167,6 +168,12 @@ def main(argv: list[str] | None = None) -> int:
                                          "here.")
         print("Sent. Check Discord." if ok else "Discord didn't accept it: check the webhook link in .env.")
         return 0 if ok else 1
+    if args.command == "sounds":
+        try:
+            return cmd_sounds(cfg)
+        except MediaToolMissing as exc:
+            print(exc, file=sys.stderr)
+            return 2
 
     try:
         streamers = load_streamers(cfg.path("paths.streamers"))
@@ -792,7 +799,8 @@ def _edit(cfg, client, conn, args) -> int:
             print(f"  loud at {m.peak:5.1f} s ({m.start:.1f}-{m.end:.1f} s), {m.over_db:.0f} dB over normal")
         data = sample_plan(moments, duration, row["title"])
     try:
-        plan = parse_plan(data, duration)
+        sounds = _sound_library(cfg, ffmpeg)
+        plan = parse_plan(data, duration, sounds)
     except PlanError as exc:
         print(f"The plan isn't valid: {exc}", file=sys.stderr)
         return 1
@@ -803,7 +811,7 @@ def _edit(cfg, client, conn, args) -> int:
     (dest.with_suffix(".plan.json")).parent.mkdir(parents=True, exist_ok=True)
     dest.with_suffix(".plan.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
     try:
-        render(ffmpeg, source, plan, dest, duration_s=duration, cam_box=cam_box)
+        render(ffmpeg, source, plan, dest, duration_s=duration, cam_box=cam_box, sounds=sounds)
     except RenderError as exc:
         print(exc, file=sys.stderr)
         return 1
@@ -832,9 +840,38 @@ def _editor_factory(cfg, client):
     writer = ClaudePlanWriter(model=settings.model, effort=settings.effort)
 
     def make():
+        # The library is read each time, so sounds dropped into the folder are used from the next edit.
         return Editor(conn=db.connect(cfg.path("paths.database"), threads=True), client=client, ffmpeg=ffmpeg,
-                      writer=writer, edits_dir=edits, settings=settings)
+                      writer=writer, edits_dir=edits, settings=settings, sounds=_sound_library(cfg, ffmpeg))
     return make
+
+
+def _sound_library(cfg, ffmpeg):
+    """The editor's sounds (config.yaml -> editor.sounds_dir), with the starter effects made if missing."""
+    from .editing.sounds import SoundLibrary, make_starter
+
+    folder = cfg.base_dir / str(cfg.get("editor.sounds_dir", "sounds") or "sounds")
+    if cfg.get("editor.sounds", True) is not True:
+        return None
+    made = make_starter(folder, ffmpeg)
+    if made:
+        log.info("Made %d starter sound effects in %s", len(made), folder / "sfx")
+    return SoundLibrary.load(folder, ffmpeg)
+
+
+def cmd_sounds(cfg) -> int:
+    lib = _sound_library(cfg, find_ffmpeg(cfg))
+    if lib is None:
+        print("Sounds are off (config.yaml -> editor.sounds).")
+        return 0
+    folder = cfg.base_dir / str(cfg.get("editor.sounds_dir", "sounds") or "sounds")
+    print(lib.describe() or "No sounds.")
+    print(f"\nDrop effects into {folder / 'sfx'} and music into {folder / 'music'}; describe them in "
+          f"{folder / 'sounds.yaml'} (optional).")
+    for s in lib.sounds.values():
+        if s.credit:
+            print(f"  credit for {s.id}: {s.credit}")
+    return 0
 
 
 def _watch_editor(cfg, client):

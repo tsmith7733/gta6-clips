@@ -10,6 +10,7 @@ usual clipper look.
 from __future__ import annotations
 
 import logging
+import math
 import shutil
 import subprocess
 import tempfile
@@ -135,8 +136,94 @@ def _text_y(position: str) -> str:
     return {"top": "h*0.34", "middle": "(h-text_h)/2", "bottom": "h*0.70-text_h"}[position]
 
 
-def build_graph(plan: EditPlan, shots: list[Shot], workdir: Path) -> tuple[str, list[str]]:
-    """The filter graph, and the text files it reads (written into workdir)."""
+ATTACHED_VOLUME = 0.7          # a replay's, freeze's or text's own sound
+MUSIC_FADE_IN, MUSIC_FADE_OUT = 0.6, 1.5
+# Levels are set against the clip's own loudness (Clips Kitty's clips are already loud): an effect at
+# volume 0.7 is EFFECT_OVER_DB louder than the clip on average (at the clip's level they got lost:
+# measured on clip 171), music at 0.12 sits MUSIC_UNDER_DB under it (and dips further while the clip
+# is loud). The clip itself goes down CLIP_DB so the effects have room under the limiter.
+EFFECT_REFERENCE, EFFECT_OVER_DB = 0.7, 4.0
+MUSIC_REFERENCE, MUSIC_UNDER_DB = 0.12, 12.0
+CLIP_DB = -2.0
+DEFAULT_CLIP_MEAN_DB, DEFAULT_SOUND_MEAN_DB = -16.0, -20.0
+
+
+def _gain_db(clip_mean: float, sound, volume: float, reference: float, under: float = 0.0) -> float:
+    own = sound.mean_db if sound.mean_db is not None else DEFAULT_SOUND_MEAN_DB
+    db = clip_mean - under + 20 * math.log10(volume / reference) - own + 20 * math.log10(sound.gain)
+    return max(-30.0, min(30.0, db))
+
+
+def sound_events(plan: EditPlan, shots: list[Shot], sounds) -> list[tuple[float, object, float]]:
+    """The sound effects, as (output time, library Sound, volume), in the order they're inputs 1..n."""
+    if sounds is None:
+        return []
+    events = []
+    for e in plan.sounds:
+        events.append((out_time(shots, e.at), sounds.get(e.sound), e.volume))
+    for t in plan.texts:
+        if t.sound:
+            events.append((out_time(shots, t.start), sounds.get(t.sound), ATTACHED_VOLUME))
+    freezes = [f for f in plan.freezes if f.sound]
+    replays = {(r.start, r.end, r.label): r for r in plan.replays if r.sound}
+    clock = 0.0
+    for s in shots:
+        f = next((f for f in freezes if abs(f.at - s.a) <= EPS), None) if s.kind == "freeze" else None
+        if f is not None:
+            freezes.remove(f)
+            events.append((clock, sounds.get(f.sound), ATTACHED_VOLUME))
+        elif s.replay and (s.a, s.b, s.label) in replays:
+            events.append((clock, sounds.get(replays.pop((s.a, s.b, s.label)).sound), ATTACHED_VOLUME))
+        clock += s.seconds
+    return sorted((e for e in events if e[1] is not None), key=lambda e: e[0])
+
+
+def audio_inputs(plan: EditPlan, shots: list[Shot], sounds) -> list[tuple[Path, bool]]:
+    """The extra ffmpeg inputs, in order: each sound effect, then the music (looped)."""
+    inputs = [(snd.path, False) for _, snd, _ in sound_events(plan, shots, sounds)]
+    if plan.music and sounds is not None and sounds.get(plan.music.track):
+        inputs.append((sounds.get(plan.music.track).path, True))
+    return inputs
+
+
+def _mix_lines(plan: EditPlan, shots: list[Shot], sounds, clip_mean_db: float | None = None) -> list[str]:
+    """Mixes the clip's sound ([acat]) with the effects and the ducked music into [aout]."""
+    events = sound_events(plan, shots, sounds)
+    music = sounds.get(plan.music.track) if plan.music and sounds is not None else None
+    if not events and music is None:
+        return ["[acat]anull[aout]"]
+    clip_mean = DEFAULT_CLIP_MEAN_DB if clip_mean_db is None else clip_mean_db
+    total = sum(s.seconds for s in shots)
+    lines, mix = [f"[acat]volume={CLIP_DB}dB[clip]"], []
+    if music is not None:
+        n = len(events) + 1
+        fade_out = max(0.0, total - MUSIC_FADE_OUT)
+        db = _gain_db(clip_mean, music, plan.music.volume, MUSIC_REFERENCE, MUSIC_UNDER_DB)
+        lines.append(f"[{n}:a]atrim=start={plan.music.start:.3f}:duration={total:.3f},asetpts=PTS-STARTPTS,"
+                     f"aresample=48000,aformat=channel_layouts=stereo,volume={db:.1f}dB,"
+                     f"afade=t=in:d={MUSIC_FADE_IN}:curve=tri,afade=t=out:st={fade_out:.3f}:d={MUSIC_FADE_OUT}[mraw]")
+        # The music dips whenever the clip itself is loud (his voice, a crash), and comes back up between.
+        lines.append("[clip]asplit=2[voice][key]")
+        lines.append("[mraw][key]sidechaincompress=threshold=0.1:ratio=4:attack=20:release=400[music]")
+        mix += ["[voice]", "[music]"]
+    else:
+        mix.append("[clip]")
+    for k, (at, snd, volume) in enumerate(events, start=1):
+        ms = int(round(at * 1000))
+        db = _gain_db(clip_mean, snd, volume, EFFECT_REFERENCE, -EFFECT_OVER_DB)
+        lines.append(f"[{k}:a]aresample=48000,aformat=channel_layouts=stereo,volume={db:.1f}dB,"
+                     f"adelay=delays={ms}:all=1[fx{k}]")
+        mix.append(f"[fx{k}]")
+    # normalize=0: every input keeps its own level; the limiter stops a boom on a yell from clipping.
+    lines.append("".join(mix) + f"amix=inputs={len(mix)}:duration=first:normalize=0:dropout_transition=0,"
+                 "alimiter=limit=0.95:level=disabled[aout]")
+    return lines
+
+
+def build_graph(plan: EditPlan, shots: list[Shot], workdir: Path, sounds=None,
+                clip_mean_db: float | None = None) -> tuple[str, list[str]]:
+    """The filter graph, and the text files it reads (written into workdir). With `sounds` (the
+    SoundLibrary), the plan's effects and music are inputs 1..n, in `audio_inputs` order."""
     plays = [i for i, s in enumerate(shots) if s.kind == "play"]
     lines = [f"[0:v]split={len(shots)}" + "".join(f"[v{i}]" for i in range(len(shots))),
              f"[0:a]asplit={len(plays)}" + "".join(f"[a{i}]" for i in plays)]
@@ -164,7 +251,8 @@ def build_graph(plan: EditPlan, shots: list[Shot], workdir: Path) -> tuple[str, 
             tempo = f",{_atempo(s.speed)}" if s.speed != 1.0 else ""
             lines.append(f"[a{i}]atrim=start={s.a:.3f}:end={s.b:.3f},asetpts=PTS-STARTPTS{tempo},"
                          f"aresample=48000,aformat=channel_layouts=stereo[sa{i}]")
-    lines.append("".join(f"[sv{i}][sa{i}]" for i in range(len(shots))) + f"concat=n={len(shots)}:v=1:a=1[cv][aout]")
+    lines.append("".join(f"[sv{i}][sa{i}]" for i in range(len(shots))) + f"concat=n={len(shots)}:v=1:a=1[cv][acat]")
+    lines += _mix_lines(plan, shots, sounds, clip_mean_db)
 
     # Text, labels and the hook, at output times.
     overlays: list[tuple[float, float, Text]] = []
@@ -203,8 +291,10 @@ def find_font() -> Path:
     raise RenderError("No bold font found for the text (Impact on Windows)")
 
 
-def render(ffmpeg: Path, source: Path, plan: EditPlan, dest: Path, *, duration_s: float, cam_box=None) -> Path:
-    """Renders the plan onto `source` (a Clips Kitty clip) into `dest` (.mp4)."""
+def render(ffmpeg: Path, source: Path, plan: EditPlan, dest: Path, *, duration_s: float, cam_box=None,
+           sounds=None) -> Path:
+    """Renders the plan onto `source` (a Clips Kitty clip) into `dest` (.mp4). `sounds` is the
+    SoundLibrary its sound effects and music come from."""
     shots = build_shots(plan, duration_s, cam_box)
     if not shots:
         raise RenderError("The plan keeps nothing of the clip")
@@ -215,9 +305,18 @@ def render(ffmpeg: Path, source: Path, plan: EditPlan, dest: Path, *, duration_s
     with tempfile.TemporaryDirectory() as tmp:
         work = Path(tmp)
         shutil.copy(find_font(), work / "font.ttf")
-        graph, _ = build_graph(plan, shots, work)
+        inputs = audio_inputs(plan, shots, sounds)
+        clip_mean = None
+        if inputs:
+            from .sounds import mean_volume
+
+            clip_mean = mean_volume(ffmpeg, source)
+        graph, _ = build_graph(plan, shots, work, sounds, clip_mean)
         (work / "graph.txt").write_text(graph, encoding="utf-8")
-        args = [str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error", "-i", str(source.resolve()),
+        extra: list[str] = []
+        for path, loop in inputs:
+            extra += (["-stream_loop", "-1"] if loop else []) + ["-i", str(Path(path).resolve())]
+        args = [str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error", "-i", str(source.resolve()), *extra,
                 "-/filter_complex", "graph.txt", "-map", "[vout]", "-map", "[aout]", "-c:v", "libx264",
                 "-preset", "veryfast", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
                 str(dest.resolve())]

@@ -197,6 +197,8 @@ editor:
   effort: medium
   per_run: 2                 # clips edited each time the watcher looks (every 10 minutes)
   self_check: true
+  sounds: true               # sound effects and music in edits (stage 1 of the studio)
+  sounds_dir: sounds         # sfx/ and music/ in here; starter effects are made by themselves
 
 # Phase 4: the review page (python -m gta6clips review). Only ever on 127.0.0.1.
 review:

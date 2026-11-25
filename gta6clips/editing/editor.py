@@ -22,8 +22,9 @@ from typing import Callable, Protocol
 
 from ..media import _popen_kwargs
 from .moments import LoudMoment, measure_moments
-from .plan import PLAN_SCHEMA, EditPlan, PlanError, parse_plan
-from .render import RenderError, build_shots, out_time, render
+from .plan import EditPlan, PlanError, parse_plan, plan_schema
+from .render import RenderError, build_shots, out_time, render, sound_events
+from .sounds import SoundLibrary
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +86,18 @@ or of the payoff. Use sparingly: at most one.
 payoff, 2-7 words, no clickbait lies.
 - notes: one short line per choice, saying why (the owner reads these).
 
+Sound, when you're given a sound list (only ids from that list):
+- sounds: a sound effect at a second of the clip ("at"), volume 0.2-1.0 (0.7 is normal). Replays, \
+freezes and texts can also take a "sound" that plays as they start: a whoosh into a replay, a ding or \
+sting on a freeze, a pop on a text.
+- music: optionally one background track, volume 0.05-0.3 (0.12 is a good start), "start" = where in \
+the track to begin. It fades in and out and dips by itself whenever the clip is loud.
+Sound it like a good clipper: an impact sound exactly on the crash (the loud moment's peak, with the \
+flash), a whoosh into a replay or a big punch-in, a pop when a text appears. 2-6 effects in a 30-60 s \
+clip is plenty; never put one over his punchline's words, and not one on every cut. Music only when it \
+helps: a montage or compilation, or a slow clip that needs energy. His voice and the game must stay \
+clearly louder, so a talky, funny clip usually gets no music.
+
 Make the edit fit the clip: a funny line gets a punch-in on his face as he says it; a crash gets a \
 flash, maybe a shake and a replay; a slow clip gets tightened with keep. Don't do everything at once: \
 3-8 moves in a 30-60 s clip is plenty, and a clean clip with a few well-timed punch-ins beats a busy one. \
@@ -100,20 +113,26 @@ empty game or half a face?
 - is every text readable, not cut off at the edges, and not covering his face or the action?
 - does the hook make sense on its first frame?
 - anything that looks broken (black frames, a wrong crop, text over text)?
+You can't hear the edit, so keep its sounds and music as they are unless a fix moves the moment they \
+belong to (then move them with it).
 Answer ok=true if it's good enough to show the owner. Otherwise list the problems and give a fixed \
 plan (the whole plan, same moves and rules as before). Only change what's wrong.
 """
 
-CHECK_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "ok": {"type": "boolean"},
-        "problems": {"type": "array", "items": {"type": "string"}},
-        "fixed_plan": PLAN_SCHEMA,
-    },
-    "required": ["ok", "problems", "fixed_plan"],
-    "additionalProperties": False,
-}
+def check_schema(plan: dict) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "ok": {"type": "boolean"},
+            "problems": {"type": "array", "items": {"type": "string"}},
+            "fixed_plan": plan,
+        },
+        "required": ["ok", "problems", "fixed_plan"],
+        "additionalProperties": False,
+    }
+
+
+CHECK_SCHEMA = check_schema(plan_schema())
 
 
 class EditorError(Exception):
@@ -133,6 +152,12 @@ class EditBrief:
     context: str = ""                       # what Clips Kitty / our notes know (a compilation's parts)
     owner_notes: list[str] = field(default_factory=list)   # the owner's suggestions, newest first
     request: str = ""                       # the owner's note for this clip
+    sounds: str = ""                        # the sound library, described (SoundLibrary.describe)
+    sfx_ids: tuple[str, ...] = ()
+    music_ids: tuple[str, ...] = ()
+
+    def schema(self) -> dict:
+        return plan_schema(self.sfx_ids, self.music_ids)
 
 
 @dataclass
@@ -168,6 +193,7 @@ def brief_content(brief: EditBrief) -> list[dict]:
     if brief.context:
         text += f"\nAbout this clip:\n{brief.context}\n"
     text += f"\nTranscript (seconds of the clip):\n{lines}\n\nLoud moments (he yells, something bangs):\n{loud}\n"
+    text += (f"\n{brief.sounds}\n" if brief.sounds else "\n(No sound library: don't use sounds or music.)\n")
     if brief.owner_notes:
         text += "\nThe channel owner's suggestions from earlier edits (follow them):\n" + \
             "\n".join(f"- {n}" for n in brief.owner_notes) + "\n"
@@ -226,7 +252,7 @@ class ClaudePlanWriter:
         content = brief_content(brief)
         if problem:
             content.append({"type": "text", "text": f"Your last plan was refused: {problem}. Write it again."})
-        return self._ask(EDIT_PROMPT, content, PLAN_SCHEMA)
+        return self._ask(EDIT_PROMPT, content, brief.schema())
 
     def check(self, brief: EditBrief, plan: dict, frames: list[tuple[float, str, bytes]]) -> Answer:
         content: list[dict] = [{"type": "text", "text": f"Clip title: {brief.title}\nClip length: "
@@ -234,7 +260,7 @@ class ClaudePlanWriter:
                                 f"{json.dumps(plan)}\n\nFrames of the edited video:"}]
         for t, what, jpeg in frames:
             content += [{"type": "text", "text": f"At {t:.1f} s of the edit (should show: {what}):"}, _image(jpeg)]
-        return self._ask(CHECK_PROMPT, content, CHECK_SCHEMA)
+        return self._ask(CHECK_PROMPT, content, check_schema(brief.schema()))
 
 
 def frames_at(ffmpeg: Path, media: Path, times: list[float], width: int = FRAME_WIDTH) -> list[tuple[float, bytes]]:
@@ -311,7 +337,9 @@ class EditResult:
 
 class Editor:
     def __init__(self, *, conn: sqlite3.Connection, client, ffmpeg: Path, writer: PlanWriter, edits_dir: Path,
-                 settings: EditorSettings, clock: Callable[[], float] = time.time):
+                 settings: EditorSettings, clock: Callable[[], float] = time.time,
+                 sounds: SoundLibrary | None = None):
+        self.sounds = sounds
         self.conn = conn
         self.client = client
         self.ffmpeg = ffmpeg
@@ -384,7 +412,10 @@ class Editor:
                          transcript=[(float(x.get("start") or 0), float(x.get("end") or 0), str(x.get("text") or ""))
                                      for x in lines],
                          loud=measure_moments(self.ffmpeg, source), context="\n".join(notes[:8]),
-                         owner_notes=self._feedback(), request=request)
+                         owner_notes=self._feedback(), request=request,
+                         sounds=self.sounds.describe() if self.sounds else "",
+                         sfx_ids=tuple(self.sounds.ids("sfx")) if self.sounds else (),
+                         music_ids=tuple(self.sounds.ids("music")) if self.sounds else ())
 
     def _start(self, clip_id: int, request: str) -> int:
         now = self.clock()
@@ -405,10 +436,26 @@ class Editor:
             answer = self.writer.plan(brief, problem)
             cost += self._paid(answer, "edit plan", clip_id)
             try:
-                return answer.data, parse_plan(answer.data, brief.duration_s), cost
+                return answer.data, parse_plan(answer.data, brief.duration_s, self.sounds), cost
             except PlanError as exc:
                 problem = str(exc)
         raise EditorError(f"Claude's plan was refused twice: {problem}")
+
+    def _sound_notes(self, plan: EditPlan, brief: EditBrief) -> list[str]:
+        """What's heard, for the owner, and the credit line a music track's licence asks for."""
+        if self.sounds is None:
+            return []
+        shots = build_shots(plan, brief.duration_s, brief.cam_box)
+        out = []
+        events = sound_events(plan, shots, self.sounds)
+        if events:
+            out.append("Sounds: " + ", ".join(f"{snd.id} at {t:.1f} s" for t, snd, _ in events))
+        track = self.sounds.get(plan.music.track) if plan.music else None
+        if track is not None:
+            out.append(f"Music: {track.id} ({track.description})")
+            if track.credit:
+                out.append(f"The music needs this credit in the description: {track.credit}")
+        return out
 
     def edit(self, clip_id: int, request: str = "") -> EditResult:
         """Plans, renders and checks one edit of `clip_id`. Never raises for an ordinary failure:
@@ -422,7 +469,8 @@ class Editor:
             brief = self.brief(clip_id, source, request)
             data, plan, cost = self._plan(brief, clip_id)
             dest = self.edits_dir / f"clip{clip_id}_e{edit_id}.mp4"
-            render(self.ffmpeg, source, plan, dest, duration_s=brief.duration_s, cam_box=brief.cam_box)
+            render(self.ffmpeg, source, plan, dest, duration_s=brief.duration_s, cam_box=brief.cam_box,
+                   sounds=self.sounds)
             notes = list(plan.notes)
             if self.settings.self_check:
                 points = check_points(plan, brief.duration_s, brief.cam_box)
@@ -433,14 +481,16 @@ class Editor:
                 problems = [str(p) for p in answer.data.get("problems") or []]
                 if not answer.data.get("ok") and answer.data.get("fixed_plan"):
                     try:
-                        fixed = parse_plan(answer.data["fixed_plan"], brief.duration_s)
-                        render(self.ffmpeg, source, fixed, dest, duration_s=brief.duration_s, cam_box=brief.cam_box)
+                        fixed = parse_plan(answer.data["fixed_plan"], brief.duration_s, self.sounds)
+                        render(self.ffmpeg, source, fixed, dest, duration_s=brief.duration_s, cam_box=brief.cam_box,
+                               sounds=self.sounds)
                         data, plan = answer.data["fixed_plan"], fixed
                         notes = list(fixed.notes) + [f"Self-check of the render: {p}" for p in problems]
                     except (PlanError, RenderError) as exc:
                         notes.append(f"The self-check wanted a fix that didn't work ({exc}); this is the first version.")
                 elif problems:
                     notes += [f"Self-check: {p}" for p in problems]
+            notes += self._sound_notes(plan, brief)
             seconds = sum(s.seconds for s in build_shots(plan, brief.duration_s, brief.cam_box))
             dest.with_suffix(".plan.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
             self.conn.execute("UPDATE edits SET state = 'replaced', updated_at = ? WHERE ck_clip_id = ? AND "

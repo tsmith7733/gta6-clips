@@ -238,6 +238,16 @@ Each edit is described by a plan (JSON): `keep` ranges, `zooms` (target `cam`, `
 
 On the review page an edited clip shows **Original** and **Edited by Claude** side by side, with Claude's reasons. Under them: write a suggestion and press **Edit again with this** (Claude redoes this clip with it), **Just save the suggestion**, or **Use the original**. Every suggestion is kept and given to Claude for all later edits, so it learns how you like them. Approving still publishes Clips Kitty's version for now; uploading the edited one comes next (step 3).
 
+**Sound (studio stage 1).** Claude can put sound effects into an edit (a boom on the crash, a whoosh into a replay, a pop on a text, a fail tune at the end) and a background track that fades in and out and dips whenever the clip gets loud. Levels are set against each clip's own loudness. The sounds live in `sounds/` (not in git): `sounds/sfx/` for effects, `sounds/music/` for tracks. Eight starter effects are made there by themselves (synthesised with ffmpeg, so there's no licence to worry about). Add better ones by dropping files in; they're used from the next edit. `python -m gta6clips sounds` lists them. Optionally describe a file in `sounds/sounds.yaml` so Claude knows what it is, and give a track's credit line if its licence asks for one:
+
+```yaml
+sfx/whoosh-6316.mp3: {description: "fast airy whoosh"}
+music/late-night-drive.mp3: {description: "chill synthwave", credit: "Music: Late Night Drive by ..."}
+sfx/too-loud.wav: {volume: 0.5}
+```
+
+Only use sounds and music you're allowed to put in a YouTube video (the YouTube Audio Library in YouTube Studio, or Pixabay's free sound effects and music), or Content ID will claim the Short. Turn sound off with `editor.sounds: false`.
+
 ## Clip length and the quality check
 
 Clips Kitty's own moment finders kept making 12–25 s clips that cut the story short. So this repo ships a small Clips Kitty plugin, `plugins\exact-moments` (no network; it only reads the transcript). We tell it the exact range and it makes one clip of that range, moving each end up to 4 s to a sentence break. Clips Kitty still does the split layout, captions, titles and rendering. The range is:

@@ -7,12 +7,14 @@ from Claude can't make ffmpeg do something odd; `render.py` turns a plan into on
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 
 TARGETS = ("cam", "game", "box")
 POSITIONS = ("top", "middle", "bottom")
 SIZES = ("s", "m", "l")
 MAX_OUTPUT_S = 90.0
+MAX_SOUNDS = 10
 
 
 class PlanError(ValueError):
@@ -39,6 +41,7 @@ class Replay:
     box: tuple[float, float, float, float] | None = None
     label: str = "REPLAY"
     after: float | None = None              # where it's inserted (default: right after `end`)
+    sound: str = ""                         # a sound effect id, played as the replay starts
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,7 @@ class Freeze:
     at: float
     seconds: float = 0.7                    # 0.2-1.5
     label: str = ""
+    sound: str = ""
 
 
 @dataclass(frozen=True)
@@ -55,6 +59,21 @@ class Text:
     text: str
     position: str = "top"
     size: str = "m"
+    sound: str = ""                         # played as the text appears
+
+
+@dataclass(frozen=True)
+class Sound:
+    at: float                               # source time
+    sound: str                              # a sound effect id from the library
+    volume: float = 0.7                     # 0.1-1.0
+
+
+@dataclass(frozen=True)
+class Music:
+    track: str                              # a music id from the library
+    volume: float = 0.12                    # 0.03-0.35, before it's ducked under the clip's sound
+    start: float = 0.0                      # where in the track to begin
 
 
 @dataclass(frozen=True)
@@ -73,6 +92,8 @@ class EditPlan:
     flashes: tuple[float, ...] = ()
     hook: Hook | None = None
     notes: tuple[str, ...] = field(default=())     # why: one line per idea, shown on the review page
+    sounds: tuple[Sound, ...] = ()
+    music: Music | None = None
 
 
 def _num(d: dict, key: str, default=None) -> float:
@@ -110,8 +131,17 @@ def _clean_text(text: str, limit: int = 60) -> str:
     return " ".join(words)
 
 
-def parse_plan(data: dict, duration_s: float) -> EditPlan:
-    """Checks a plan (from JSON) against a clip of `duration_s` seconds. Raises PlanError."""
+def parse_plan(data: dict, duration_s: float, sounds=None) -> EditPlan:
+    """Checks a plan (from JSON) against a clip of `duration_s` seconds. Raises PlanError.
+    `sounds` is the SoundLibrary the plan's sound effects and music must come from."""
+    def sfx(value) -> str:
+        sid = str(value or "").strip()
+        if not sid:
+            return ""
+        if sounds is None or sounds.get(sid, "sfx") is None:
+            raise PlanError(f"there's no sound effect {sid!r} in the sound library")
+        return sid
+
     def within(a: float, b: float, what: str, min_len: float = 0.2) -> tuple[float, float]:
         a, b = max(0.0, a), min(duration_s, b)
         if b - a < min_len:
@@ -153,13 +183,14 @@ def parse_plan(data: dict, duration_s: float) -> EditPlan:
         after = r.get("after")
         after = b if after is None else min(duration_s, max(0.0, float(after)))
         replays.append(Replay(a, b, speed, target, max(1.0, min(3.0, _num(r, "scale", 1.3))), _box(r),
-                              _clean_text(r.get("label", "REPLAY"), 20), after))
+                              _clean_text(r.get("label", "REPLAY"), 20), after, sfx(r.get("sound"))))
     freezes = []
     for f in data.get("freezes") or []:
         at = _num(f, "at")
         if not 0 <= at < duration_s:
             raise PlanError(f"freeze at {at:.1f} s is outside the clip")
-        freezes.append(Freeze(at, max(0.2, min(1.5, _num(f, "seconds", 0.7))), _clean_text(f.get("label", ""), 30)))
+        freezes.append(Freeze(at, max(0.2, min(1.5, _num(f, "seconds", 0.7))), _clean_text(f.get("label", ""), 30),
+                              sfx(f.get("sound"))))
     texts = []
     for t in data.get("texts") or []:
         a, b = within(_num(t, "start"), _num(t, "end"), "text", 0.4)
@@ -169,7 +200,7 @@ def parse_plan(data: dict, duration_s: float) -> EditPlan:
         pos, size = str(t.get("position", "top")), str(t.get("size", "m"))
         if pos not in POSITIONS or size not in SIZES:
             raise PlanError(f"text position must be {POSITIONS} and size {SIZES}")
-        texts.append(Text(a, b, text, pos, size))
+        texts.append(Text(a, b, text, pos, size, sfx(t.get("sound"))))
     flashes = tuple(sorted(float(x) for x in data.get("flashes") or [] if 0 <= float(x) < duration_s))
     hook = None
     if data.get("hook"):
@@ -177,14 +208,34 @@ def parse_plan(data: dict, duration_s: float) -> EditPlan:
         text = _clean_text(h.get("text", "") if isinstance(h, dict) else h, 40)
         if text:
             hook = Hook(text, max(1.0, min(4.0, float(h.get("seconds", 2.0)) if isinstance(h, dict) else 2.0)))
+    effects = []
+    for x in data.get("sounds") or []:
+        at = _num(x, "at")
+        if not 0 <= at < duration_s:
+            raise PlanError(f"sound at {at:.1f} s is outside the clip")
+        effects.append(Sound(at, sfx(x.get("sound")), max(0.1, min(1.0, _num(x, "volume", 0.7)))))
+    effects = sorted((e for e in effects if e.sound), key=lambda e: e.at)
+    count = len(effects) + sum(1 for m in (*replays, *freezes, *texts) if m.sound)
+    if count > MAX_SOUNDS:
+        raise PlanError(f"{count} sound effects is too many (at most {MAX_SOUNDS})")
+    music = None
+    m = data.get("music")
+    if isinstance(m, dict) and str(m.get("track") or "").strip():
+        track = str(m["track"]).strip()
+        if sounds is None or sounds.get(track, "music") is None:
+            raise PlanError(f"there's no music track {track!r} in the sound library")
+        start = max(0.0, _num(m, "start", 0.0))
+        if start >= max(0.0, sounds.get(track).seconds - 10):
+            start = 0.0                      # too near the track's end: from the top
+        music = Music(track, max(0.03, min(0.35, _num(m, "volume", 0.12))), start)
     plan = EditPlan(tuple(keep), tuple(zooms), tuple(replays), tuple(freezes), tuple(texts), flashes, hook,
-                    tuple(str(n)[:200] for n in data.get("notes") or []))
+                    tuple(str(n)[:200] for n in data.get("notes") or []), tuple(effects), music)
     return plan
 
 
 # The JSON schema Claude's plans follow (structured output), same moves as parse_plan.
 _BOX = {"type": "array", "items": {"type": "number"}}
-PLAN_SCHEMA = {
+_PLAN_SCHEMA = {
     "type": "object",
     "properties": {
         "keep": {"type": "array", "items": {"type": "array", "items": {"type": "number"}}},
@@ -212,3 +263,26 @@ PLAN_SCHEMA = {
     "required": ["keep", "zooms", "replays", "freezes", "texts", "flashes", "notes"],
     "additionalProperties": False,
 }
+
+
+def plan_schema(sfx_ids=(), music_ids=()) -> dict:
+    """The plan schema, with the sound moves when the library has sounds (their ids as enums, so
+    Claude can't name a file that isn't there)."""
+    schema = copy.deepcopy(_PLAN_SCHEMA)
+    props = schema["properties"]
+    if sfx_ids:
+        sound = {"type": "string", "enum": list(sfx_ids)}
+        for move in ("replays", "freezes", "texts"):
+            props[move]["items"]["properties"]["sound"] = sound
+        props["sounds"] = {"type": "array", "items": {"type": "object", "properties": {
+            "at": {"type": "number"}, "sound": sound, "volume": {"type": "number"}},
+            "required": ["at", "sound", "volume"], "additionalProperties": False}}
+        schema["required"].append("sounds")
+    if music_ids:
+        props["music"] = {"type": "object", "properties": {
+            "track": {"type": "string", "enum": list(music_ids)}, "volume": {"type": "number"},
+            "start": {"type": "number"}}, "required": ["track", "volume", "start"], "additionalProperties": False}
+    return schema
+
+
+PLAN_SCHEMA = plan_schema()

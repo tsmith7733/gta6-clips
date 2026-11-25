@@ -8,6 +8,7 @@ logs/
 recordings/
 spoilers/
 tools/
+sounds/
 
 # Python
 .venv/
