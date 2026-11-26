@@ -60,8 +60,8 @@ def test_shots_split_at_zooms_and_insert_replays_and_freezes():
 
 def test_the_graph_draws_texts_at_output_times(tmp_path):
     plan = parse_plan(_plan(keep=[[0, 10], [14, 20]], texts=[{"start": 15, "end": 17, "text": "no way",
-                                                              "position": "bottom", "size": "l"}],
-                            flashes=[16], hook={"text": "Watch this", "seconds": 2}), 20)
+                                                              "position": "bottom", "size": "l", "style": "plain"}],
+                            flashes=[16], hook={"text": "Watch this", "seconds": 2, "style": "plain"}), 20)
     graph, files = build_graph(plan, build_shots(plan, 20, CAM), tmp_path)
     assert "between(t\\,11.000\\,13.000)" in graph       # 15-17 s lands at 11-13 s once 10-14 s is cut
     assert "between(t\\,0.000\\,2.000)" in graph          # the hook

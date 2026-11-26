@@ -101,10 +101,16 @@ game's own look. Don't stack "cinematic" with a vignette effect.
 - stickers: drawn over the picture for 0.8-3 s, each with a point x, y as fractions of the frame (as you see it in the frames you were given, before any zoom; punch-ins are accounted for): kind "emoji" (centred on the point; emoji is one of the names in the schema: laugh, skull, cry, fire, shock, eyes, clown, boom, siren...) for a reaction beat, "arrow" (its tip touches the point, coming from the middle of the frame) to point at the thing that's about to matter (the cop car, the ramp, the guy he's about to hit), "circle" (around the point) to circle that thing. size s, m, l. Never over his face box or a text, and not during a smooth or push zoom or a pushed freeze (the picture moves under them; a punch zoom is fine). 0-3 per clip: an arrow or circle on the setup ("look at this") and an emoji on the reaction is the classic. A sticker only works if its point is exactly on the thing, so only use one where you can see where it is in a frame near that time.
 - texts: short captions that add something: a label for what's happening, a punchline, a count \
 ("FAIL #2"). Not a transcript. 1-5 words, position "top" (over the game, under the webcam), \
-"middle" or "bottom"; size s, m or l. Don't cover the streamer's face box. Each shows 1-3 s.
+"middle" or "bottom"; size s, m or l. Don't cover the streamer's face box. Each shows 1-3 s. \
+style: "pop" (scales in with a bounce: the default, fits most), "slam" (drops in big and shakes as it \
+lands: an impact, a "BRUH", a verdict), "words" (comes in word by word: a punchline or a line that \
+builds, 3-5 words, shown 2 s or more), "shake" (keeps shaking: rage, panic, a scream), "plain" (just \
+there). Mix them; not every text should slam. highlight: one or two words of the text drawn in \
+yellow (the word that matters: "TWO", "AGAIN", "COPS"), or "" for none.
 - flashes: a white flash at the second of an impact.
 - hook: the text on screen for the first 1.5-3 seconds, which makes people stay: a tease of the \
-payoff, 2-7 words, no clickbait lies.
+payoff, 2-7 words, no clickbait lies. It takes a style and highlight like a text (pop or words \
+suit a hook; highlight its key word).
 - notes: one short line per choice, saying why (the owner reads these).
 
 Sound, when you're given a sound list (only ids from that list):
@@ -132,7 +138,8 @@ video, each at a moment where one of your moves should be visible. Check them li
 - does each punch-in land on what it should (his face/avatar for "cam", the action for "game"), not on \
 empty game or half a face?
 - is every text readable, not cut off at the edges, and not covering his face or the action?
-- does the hook make sense on its first frame?
+- does the hook make sense on its first frame? (Texts animate in: one may still be growing, or in \
+"words" style missing its last words, in a frame right at its start.)
 - anything that looks broken (black frames, a wrong crop, text over text)?
 - is every sticker on its thing: an arrow's tip on what it points at, a circle around it, an emoji not covering his face, the action or a text? Move its x, y in the fix if not (stickers pop in, so one may still be small in a frame right at its start).
 Transitions are blurred on purpose, and a smooth or push zoom may be mid-way in a frame. Glitch, \
@@ -343,7 +350,7 @@ def check_points(plan: EditPlan, duration_s: float, cam_box=None, limit: int = 1
     shots = build_shots(plan, duration_s, cam_box)
     points: list[tuple[float, str]] = []
     if plan.hook:
-        points.append((min(0.5, plan.hook.seconds / 2), f"the hook text '{plan.hook.text}'"))
+        points.append((min(1.0, plan.hook.seconds * 0.6), f"the hook text '{plan.hook.text}'"))
     for z in plan.zooms:
         if z.style == "push":   # look where it ends up
             points.append((out_time(shots, z.end - 0.1), f"the end of a slow push-in ({z.scale:.1f}x) on the {z.target}"))

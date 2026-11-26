@@ -493,20 +493,10 @@ def build_graph(plan: EditPlan, shots: list[Shot], workdir: Path, sounds=None,
     lines.append("".join(f"[sv{i}][sa{i}]" for i in range(len(shots))) + f"concat=n={len(shots)}:v=1:a=1[cv][acat]")
     lines += _mix_lines(plan, shots, sounds, clip_mean_db)
 
-    # Text, labels and the hook, at output times.
-    overlays: list[tuple[float, float, Text]] = []
-    for t in plan.texts:
-        a, b = out_time(shots, t.start), out_time(shots, t.end)
-        if b > a:
-            overlays.append((a, b, t))
-    clock = 0.0
-    for s in shots:
-        if s.label:
-            overlays.append((clock, clock + s.seconds, Text(0, 0, s.label, "middle" if s.kind == "freeze" else "top",
-                                                            "l" if s.kind == "freeze" else "m")))
-        clock += s.seconds
-    if plan.hook:
-        overlays.append((0.0, plan.hook.seconds, Text(0, 0, plan.hook.text, "top", "l")))
+    from .captions import animated
+
+    overlays = text_overlays(plan, shots)
+    moving = [o for o in overlays if animated(o[2])]
     chain, files = [], []
     # Colour first, then the effects, then the stickers, so text and labels drawn last stay clean.
     if GRADE_FILTERS.get(plan.grade):
@@ -515,7 +505,8 @@ def build_graph(plan: EditPlan, shots: list[Shot], workdir: Path, sounds=None,
         chain += effect_filters(kind, a, b)
     runs = sticker_runs(plan, shots)
     label = "cv"
-    if runs:
+    if runs or moving:
+        from . import captions
         from .stickers import arrow_direction, write_frames
 
         lines.append("[cv]" + (",".join(chain) if chain else "null") + "[sk0]")
@@ -532,7 +523,15 @@ def build_graph(plan: EditPlan, shots: list[Shot], workdir: Path, sounds=None,
                 lines.append(f"[{label}][sp{n}_{j}]overlay=x={round(x - frames.size / 2)}:y={round(y - frames.size / 2)}:"
                              f"eof_action=pass:enable='between(t\\,{a:.3f}\\,{b:.3f})'[sk{k}]")
                 label = f"sk{k}"
-    for n, (a, b, t) in enumerate(overlays):
+        # Styled captions: frame runs like the stickers, inputs after them.
+        for n, (a, b, t) in enumerate(moving):
+            frames = captions.write_frames(t, b - a, workdir, f"txt{n}")
+            k += 1
+            lines.append(f"[{first + len(runs) + n}:v]format=rgba,setpts=PTS-STARTPTS+{a:.3f}/TB[tp{n}]")
+            lines.append(f"[{label}][tp{n}]overlay=x=0:y={frames.y}:eof_action=pass:"
+                         f"enable='between(t\\,{a:.3f}\\,{b:.3f})'[sk{k}]")
+            label = f"sk{k}"
+    for n, (a, b, t) in enumerate(o for o in overlays if not animated(o[2])):
         name = f"t{n}.txt"
         text = _wrap(t.text, WRAP[t.size])
         # newline="\n": on Windows text mode writes \r\n, and drawtext draws the \r as a blank line.
@@ -544,6 +543,27 @@ def build_graph(plan: EditPlan, shots: list[Shot], workdir: Path, sounds=None,
         chain.append(f"drawbox=x=0:y=0:w=iw:h=ih:color=white@0.55:t=fill:enable='between(t\\,{o:.3f}\\,{o + 0.1:.3f})'")
     lines.append(f"[{label}]" + (",".join(chain) if chain else "null") + "[vout]")
     return ";\n".join(lines), files
+
+
+def text_overlays(plan: EditPlan, shots: list[Shot]) -> list[tuple[float, float, Text]]:
+    """The texts, replay and freeze labels and the hook, at output times. A freeze's label slams in,
+    a replay's pops."""
+    overlays: list[tuple[float, float, Text]] = []
+    for t in plan.texts:
+        a, b = out_time(shots, t.start), out_time(shots, t.end)
+        if b > a:
+            overlays.append((a, b, t))
+    clock = 0.0
+    for s in shots:
+        if s.label:
+            freeze = s.kind == "freeze"
+            overlays.append((clock, clock + s.seconds, Text(0, 0, s.label, "middle" if freeze else "top",
+                                                            "l" if freeze else "m", style="slam" if freeze else "pop")))
+        clock += s.seconds
+    if plan.hook:
+        overlays.append((0.0, plan.hook.seconds, Text(0, 0, plan.hook.text, "top", "l", style=plan.hook.style,
+                                                      highlight=plan.hook.highlight)))
+    return overlays
 
 
 def find_font() -> Path:
@@ -578,8 +598,12 @@ def render(ffmpeg: Path, source: Path, plan: EditPlan, dest: Path, *, duration_s
         extra: list[str] = []
         for path, loop in inputs:
             extra += (["-stream_loop", "-1"] if loop else []) + ["-i", str(Path(path).resolve())]
+        from .captions import animated
+
         for n in range(len(sticker_runs(plan, shots))):      # their frames, written by build_graph
             extra += ["-framerate", str(FPS), "-i", f"stk{n}/f%04d.png"]
+        for n in range(sum(1 for o in text_overlays(plan, shots) if animated(o[2]))):
+            extra += ["-framerate", str(FPS), "-i", f"txt{n}/f%04d.png"]
         args = [str(ffmpeg), "-y", "-hide_banner", "-loglevel", "error", "-i", str(source.resolve()), *extra,
                 "-/filter_complex", "graph.txt", "-map", "[vout]", "-map", "[aout]", "-c:v", "libx264",
                 "-preset", "veryfast", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",

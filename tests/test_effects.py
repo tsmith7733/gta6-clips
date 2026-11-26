@@ -69,7 +69,8 @@ def test_effects_land_at_output_times_under_the_text(tmp_path):
                             freezes=[{"at": 12, "seconds": 0.5, "label": "OOF", "effect": "bw"}],
                             replays=[{"start": 2, "end": 4, "speed": 0.5, "target": "game", "scale": 1.3,
                                       "label": "AGAIN", "effect": "glitch"}],
-                            texts=[{"start": 14, "end": 16, "text": "no way", "position": "top", "size": "m"}]), 20)
+                            texts=[{"start": 14, "end": 16, "text": "no way", "position": "top", "size": "m",
+                                   "style": "plain"}]), 20)
     shots = build_shots(plan, 20)
     ranges = [(round(a, 2), round(b, 2), k) for a, b, k in effect_ranges(plan, shots)]
     # 0-4, the 4 s replay (4-8), 4-5 (8-9), then 8-12 lands at 9-13, the freeze at 13-13.5

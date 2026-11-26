@@ -13,6 +13,9 @@ from dataclasses import dataclass, field
 TARGETS = ("cam", "game", "box")
 POSITIONS = ("top", "middle", "bottom")
 SIZES = ("s", "m", "l")
+# How a caption comes on: plain (just there), pop (scales in with a bounce), slam (drops from big and
+# shakes as it lands), words (word by word), shake (keeps shaking: rage, panic).
+TEXT_STYLES = ("plain", "pop", "slam", "words", "shake")
 MAX_OUTPUT_S = 90.0
 MAX_SOUNDS = 10
 ZOOM_STYLES = ("punch", "smooth", "push")   # cut straight in | ease in and out | slow push-in over the zoom
@@ -100,6 +103,8 @@ class Text:
     position: str = "top"
     size: str = "m"
     sound: str = ""                         # played as the text appears
+    style: str = "plain"                    # one of TEXT_STYLES
+    highlight: str = ""                     # words of it drawn in yellow
 
 
 @dataclass(frozen=True)
@@ -131,6 +136,8 @@ class Music:
 class Hook:
     text: str
     seconds: float = 2.0                    # shown from the edited video's start
+    style: str = "pop"
+    highlight: str = ""
 
 
 @dataclass(frozen=True)
@@ -204,6 +211,19 @@ def parse_plan(data: dict, duration_s: float, sounds=None) -> EditPlan:
             raise PlanError(f"effect must be one of {EFFECTS}, not {kind!r}")
         return kind
 
+    def text_style(value) -> str:
+        style = str(value or "").strip() or "pop"
+        if style not in TEXT_STYLES:
+            raise PlanError(f"text style must be one of {TEXT_STYLES}, not {style!r}")
+        return style
+
+    def highlight(value, text: str) -> str:
+        """The highlighted words that are in the text (others are dropped)."""
+        def norm(w):
+            return "".join(ch for ch in w.upper() if ch.isalnum())
+        have = {norm(w) for w in text.split()}
+        return " ".join(norm(w) for w in _clean_text(value or "", 30).split() if norm(w) and norm(w) in have)
+
     def within(a: float, b: float, what: str, min_len: float = 0.2) -> tuple[float, float]:
         a, b = max(0.0, a), min(duration_s, b)
         if b - a < min_len:
@@ -266,14 +286,17 @@ def parse_plan(data: dict, duration_s: float, sounds=None) -> EditPlan:
         pos, size = str(t.get("position", "top")), str(t.get("size", "m"))
         if pos not in POSITIONS or size not in SIZES:
             raise PlanError(f"text position must be {POSITIONS} and size {SIZES}")
-        texts.append(Text(a, b, text, pos, size, sfx(t.get("sound"))))
+        texts.append(Text(a, b, text, pos, size, sfx(t.get("sound")), text_style(t.get("style")),
+                          highlight(t.get("highlight"), text)))
     flashes = tuple(sorted(float(x) for x in data.get("flashes") or [] if 0 <= float(x) < duration_s))
     hook = None
     if data.get("hook"):
         h = data["hook"]
         text = _clean_text(h.get("text", "") if isinstance(h, dict) else h, 40)
         if text:
-            hook = Hook(text, max(1.0, min(4.0, float(h.get("seconds", 2.0)) if isinstance(h, dict) else 2.0)))
+            hook = Hook(text, max(1.0, min(4.0, float(h.get("seconds", 2.0)) if isinstance(h, dict) else 2.0)),
+                        text_style(h.get("style") if isinstance(h, dict) else ""),
+                        highlight(h.get("highlight") if isinstance(h, dict) else "", text))
     effects = []
     for x in data.get("sounds") or []:
         at = _num(x, "at")
@@ -401,9 +424,9 @@ def plan_schema(sfx_ids=(), music_ids=()) -> dict:
         "stickers": _arr(_obj(start=_NUM, end=_NUM, kind=_enum(STICKER_KINDS), emoji=_enum(("", *EMOJI)),
                               x=_NUM, y=_NUM, size=_enum(SIZES))),
         "texts": _arr(_obj(start=_NUM, end=_NUM, text=_STR, position=_enum(POSITIONS), size=_enum(SIZES),
-                           **sounded)),
+                           style=_enum(TEXT_STYLES), highlight=_STR, **sounded)),
         "flashes": _arr(_NUM),
-        "hook": _obj(text=_STR, seconds=_NUM),
+        "hook": _obj(text=_STR, seconds=_NUM, style=_enum(TEXT_STYLES), highlight=_STR),
         "notes": _arr(_STR),
     }
     if sfx_ids:

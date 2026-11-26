@@ -77,7 +77,8 @@ def test_the_graph_overlays_each_piece(tmp_path, monkeypatch):
     import gta6clips.editing.stickers as stickers
 
     plan = parse_plan(_plan(keep=[[0, 5], [8, 20]], stickers=[_sticker(start=4, end=9), _sticker(start=12, end=13)],
-                            texts=[{"start": 12, "end": 14, "text": "no way", "position": "top", "size": "m"}]), 20)
+                            texts=[{"start": 12, "end": 14, "text": "no way", "position": "top", "size": "m",
+                                   "style": "plain"}]), 20)
     shots = build_shots(plan, 20)
     calls = []
     monkeypatch.setattr(stickers, "write_frames",
